@@ -51,6 +51,20 @@ SKIP_INSTALL=1 ./scripts/dev.sh
 DEV_BACKEND_PORT=7000 DEV_FRONTEND_PORT=4000 ./scripts/dev.sh
 ```
 
+### Windows
+
+在仓库根目录使用等价的 PowerShell 脚本（macOS / Linux 部署继续使用 `./scripts/dev.sh`，两者行为一致）：
+
+```powershell
+.\dev.cmd
+# 或
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
+```
+
+自定义起始端口：`.\dev.cmd -BackendPort 7000 -FrontendPort 4000`；跳过依赖安装：先执行 `$env:SKIP_INSTALL = "1"`。
+
+Windows 与 macOS/Linux 行为一致：后端日志不会直接刷屏，控制台只显示账号/密码行与错误行，完整后端日志写入 `logs/dev-backend.log`；前端（Vite）输出原样显示。
+
 ```bash
 pip install pre-commit
 pre-commit install

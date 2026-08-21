@@ -25,6 +25,24 @@ log()  { printf "%b[dev]%b %s\n" "$CYAN" "$NC" "$*"; }
 ok()   { printf "%b[dev]%b %s\n" "$GREEN" "$NC" "$*"; }
 err()  { printf "%b[dev]%b %s\n" "$RED" "$NC" "$*" >&2; }
 
+# Backend output filter: credential lines (Username / password) are shown in
+# green, error lines in red; everything else only goes to the log file.
+CREDENTIAL_RE='[Uu]sername|[Pp]assword'
+BACKEND_ERROR_RE='ERROR|CRITICAL|Traceback|error:'
+BACKEND_LOG="$PROJECT_ROOT/logs/dev-backend.log"
+
+filter_backend_output() {
+  local line
+  while IFS= read -r line; do
+    printf '%s\n' "$line" >>"$BACKEND_LOG"
+    if [[ "$line" =~ $CREDENTIAL_RE ]]; then
+      printf '%b%s%b\n' "$GREEN" "$line" "$NC"
+    elif [[ "$line" =~ $BACKEND_ERROR_RE ]]; then
+      printf '%b%s%b\n' "$RED" "$line" "$NC" >&2
+    fi
+  done
+}
+
 cd "$PROJECT_ROOT"
 
 # Validate executables even when dependency installation is skipped so failures
@@ -99,6 +117,9 @@ BACKEND_PID=""
 FRONTEND_PID=""
 CLEANED_UP=0
 
+mkdir -p "$PROJECT_ROOT/logs"
+: >"$BACKEND_LOG"
+
 cleanup() {
   if [[ "$CLEANED_UP" == "1" ]]; then
     return
@@ -122,8 +143,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Start the backend.
-DASHBOARD_PORT="$BACKEND_PORT" uv run main.py &
+# Start the backend. Console output is filtered (credentials and errors only);
+# the full log is written to logs/dev-backend.log.
+DASHBOARD_PORT="$BACKEND_PORT" uv run main.py > >(filter_backend_output) 2>&1 &
 BACKEND_PID=$!
 
 # Start the frontend.
@@ -135,7 +157,8 @@ BACKEND_PID=$!
 ) &
 FRONTEND_PID=$!
 
-printf "  Backend and frontend logs follow. Press Ctrl+C to stop both.\n\n"
+printf "  Backend full log: %s (console shows credentials/errors only)\n" "$BACKEND_LOG"
+printf "  Press Ctrl+C to stop both.\n\n"
 
 # Stop both servers if either process exits. This loop works with macOS Bash 3.2,
 # which does not provide `wait -n`.
