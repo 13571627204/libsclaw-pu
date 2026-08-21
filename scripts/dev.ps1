@@ -62,27 +62,22 @@ if ($env:SKIP_INSTALL -ne "1") {
     }
 }
 
-# -- Reserve free ports; listeners stay open until both servers have started,
-# mirroring the race-prevention strategy in dev.sh. -------------
-function Reserve-Port([int]$StartPort) {
+# -- Pick free backend/frontend ports. Ports are probed via Get-NetTCPConnection
+# only: holding an actual listener socket would leak its handle into the
+# backend child process (CreateProcess inherits handles when output is
+# redirected), keeping the port busy even after the listener is closed. --
+function Find-FreePort([int]$StartPort) {
     $candidate = $StartPort
     while ($candidate -le 65535) {
-        $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Any, $candidate)
-        try {
-            $listener.Start()
-            return $listener
-        } catch {
-            $listener.Server.Close()
-            $candidate++
-        }
+        $inUse = Get-NetTCPConnection -LocalPort $candidate -State Listen -ErrorAction SilentlyContinue
+        if (-not $inUse) { return $candidate }
+        $candidate++
     }
     throw "No free port found at or above $StartPort"
 }
 
-$backendListener = Reserve-Port $BackendPort
-$frontendListener = Reserve-Port $FrontendPort
-$BackendPort = ([System.Net.IPEndPoint]$backendListener.LocalEndpoint).Port
-$FrontendPort = ([System.Net.IPEndPoint]$frontendListener.LocalEndpoint).Port
+$BackendPort = Find-FreePort $BackendPort
+$FrontendPort = Find-FreePort $FrontendPort
 
 # Environment variables consumed by main.py (backend) and vite.config.ts (frontend).
 $env:DASHBOARD_PORT = "$BackendPort"
@@ -100,7 +95,9 @@ Set-Content -Path $BackendLog -Value ""
 #   keeping this file pure ASCII avoids encoding issues on Windows PowerShell 5.1,
 #   which assumes ANSI for BOM-less scripts).
 $credentialPattern = '(?i)username|password'
-$errorPattern = '(?i)\bERROR\b|\bCRITICAL\b|Traceback'
+# Substring match on purpose: bare \bERROR\b would hide exception lines like
+# "ModuleNotFoundError: ..." that follow a Traceback header.
+$errorPattern = '(?i)error|exception|traceback|critical'
 
 $backend = New-Object System.Diagnostics.Process
 $backend.StartInfo.FileName = "uv"
@@ -139,10 +136,6 @@ $backend.BeginErrorReadLine()
 # cmd.exe resolves pnpm.cmd from PATH (CreateProcess cannot do that on its own).
 $frontend = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "pnpm dev" `
     -WorkingDirectory $DashboardDir -NoNewWindow -PassThru
-
-# Both processes have bound their ports; release the reservations.
-$backendListener.Stop()
-$frontendListener.Stop()
 
 function Stop-Tree($proc) {
     if ($proc -and -not $proc.HasExited) {

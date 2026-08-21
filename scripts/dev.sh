@@ -28,7 +28,9 @@ err()  { printf "%b[dev]%b %s\n" "$RED" "$NC" "$*" >&2; }
 # Backend output filter: credential lines (Username / password) are shown in
 # green, error lines in red; everything else only goes to the log file.
 CREDENTIAL_RE='[Uu]sername|[Pp]assword'
-BACKEND_ERROR_RE='ERROR|CRITICAL|Traceback|error:'
+# Substring match on purpose: a stricter pattern would hide exception lines
+# like "ModuleNotFoundError: ..." that follow a Traceback header.
+BACKEND_ERROR_RE='[Ee]rror|[Ee]xception|Traceback|CRITICAL|ERROR'
 BACKEND_LOG="$PROJECT_ROOT/logs/dev-backend.log"
 
 filter_backend_output() {
