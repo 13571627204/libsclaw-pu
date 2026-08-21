@@ -10,20 +10,6 @@ LibsClaw 是一个多平台 LLM 聊天机器人及 Agent 开发框架，支持�
 
 需要 Python 3.12+、[uv](https://docs.astral.sh/uv/)、Node.js 与 pnpm。
 
-```bash
-# 后端
-uv sync
-uv run main.py
-
-# 前端（构建 WebUI）
-cd dashboard
-pnpm install
-pnpm build
-# 将 dashboard/dist 复制到 data/dist
-```
-
-启动后访问 `http://localhost:6185`，初始用户名为 `LibsClaw`，初始密码在首次启动日志中输出。
-
 ### Docker
 
 ```bash
@@ -41,15 +27,6 @@ docker compose up -d
 
 首次运行时，脚本会在缺少依赖目录时自动执行 `uv sync` 和 `pnpm install`。如已自行同步依赖，可跳过自动安装：
 
-```bash
-SKIP_INSTALL=1 ./scripts/dev.sh
-```
-
-脚本默认分别从后端端口 `6185` 和前端端口 `3007` 开始查找空闲端口，并将 Vite API 代理指向实际后端端口。请以启动日志输出的访问地址为准；按 `Ctrl+C` 会同时停止前后端。也可以自定义起始端口：
-
-```bash
-DEV_BACKEND_PORT=7000 DEV_FRONTEND_PORT=4000 ./scripts/dev.sh
-```
 
 ### Windows
 
@@ -61,18 +38,7 @@ DEV_BACKEND_PORT=7000 DEV_FRONTEND_PORT=4000 ./scripts/dev.sh
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
 ```
 
-自定义起始端口：`.\dev.cmd -BackendPort 7000 -FrontendPort 4000`；跳过依赖安装：先执行 `$env:SKIP_INSTALL = "1"`。
-
 Windows 与 macOS/Linux 行为一致：后端日志不会直接刷屏，控制台只显示账号/密码行与错误行，完整后端日志写入 `logs/dev-backend.log`；前端（Vite）输出原样显示。
-
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-- 后端测试：`uv run pytest tests`
-- 前端测试：`cd dashboard && node --test tests/*.mjs`
-- 代码规范：`ruff check` / `ruff format`
 
 ## 许可
 
