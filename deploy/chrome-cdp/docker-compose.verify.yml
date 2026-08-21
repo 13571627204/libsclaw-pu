@@ -1,0 +1,49 @@
+# OpenCLI 扩展模式验证(专用 Chrome 容器)
+#
+# 用途:验证「opencli(含daemon) + Browser Bridge 扩展 + Chromium」能否在容器里跑通,
+#       让网站命令(bilibili/小红书等)复用容器内 Chromium 的登录态。
+# 这是生产接入前的最小验证。验证通过后再做多客户工程化。
+#
+# 架构铁律(来自官方文档):
+#   opencli ↔ daemon(localhost:19825) ↔ 扩展 ↔ 浏览器  —— 默认全在 localhost。
+#   所以装 opencli 的容器必须和 Chromium 共享网络命名空间(network_mode: service:chromium),
+#   这样 daemon 绑的 localhost:19825 == 扩展连的 localhost:19825,是同一个。
+#
+# 安全:网页VNC(3001)只绑 127.0.0.1,通过 SSH 隧道访问,绝不暴露公网。
+
+name: opencli-ext
+
+services:
+  chromium:
+    # 固定 KasmVNC 版本;latest 现在走 Selkies/Wayland,部分服务器访问 3001 会黑屏。
+    image: lscr.io/linuxserver/chromium:kasm
+    container_name: opencli-chromium
+    security_opt:
+      - seccomp:unconfined          # 部分内核需要;不需要时可删
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      # 每次启动自动加载扩展(开发者模式扩展重启会被禁用,故用命令行强制加载)
+      #   --load-extension                                    指定扩展目录(含 manifest.json 那层)
+      #   --disable-features=DisableLoadExtensionCommandLineSwitch  新版 Chromium 默认禁用命令行加载扩展,必须关掉该限制
+      - CHROME_CLI=--load-extension=/config/opencli-extension --disable-features=DisableLoadExtensionCommandLineSwitch
+    volumes:
+      - ./chromium-config:/config     # profile/登录态/已加载扩展 持久化(重启不丢)
+    ports:
+      # 网页版 Chromium 界面(HTTPS),只绑本机,人工登录+装扩展用,经 SSH 隧道访问
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001"
+    shm_size: "1gb"                   # 现代网站(含视频)必需
+    restart: unless-stopped
+
+  opencli:
+    image: node:22-bookworm-slim
+    container_name: opencli-runner
+    # 关键:共享 chromium 的网络命名空间,使 daemon 与扩展同处一个 localhost
+    network_mode: "service:chromium"
+    environment:
+      - TZ=Asia/Shanghai
+    command: sleep infinity           # 常驻,供 docker exec 进去装 opencli、跑命令
+    depends_on:
+      - chromium

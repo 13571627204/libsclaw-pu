@@ -1,0 +1,736 @@
+<template>
+  <div class="d-flex align-center justify-space-between">
+    <span v-if="!hasSelection" style="color: rgb(var(--v-theme-primaryText));">
+      {{ tm('providerSelector.notSelected') }}
+    </span>
+    <span v-else class="provider-name-text">
+      <template v-if="multiple">
+        {{ tm('providerSelector.selectedCount', { count: selectedProviders.length }) }}
+      </template>
+      <template v-else>
+        {{ modelValue }}
+      </template>
+    </span>
+    <v-btn size="small" color="primary" variant="tonal" @click="openDialog">
+      {{ buttonText || tm('providerSelector.buttonText') }}
+    </v-btn>
+  </div>
+
+  <div v-if="multiple && selectedProviders.length > 0" class="selected-preview mt-2">
+    <v-chip
+      v-for="providerId in selectedProviders"
+      :key="`preview-${providerId}`"
+      size="x-small"
+      color="primary"
+      variant="tonal"
+      class="mr-1 mb-1"
+      label
+    >
+      {{ providerId }}
+    </v-chip>
+  </div>
+
+  <!-- Provider Selection Dialog -->
+  <v-dialog v-model="dialog" max-width="600px">
+    <v-card class="provider-selector-dialog">
+      <v-card-title
+        class="provider-selector-dialog__title"
+      >
+        <span>{{ tm('providerSelector.dialogTitle') }}</span>
+        <v-btn
+          size="small"
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-plus"
+          class="provider-selector-create-btn"
+          @click="openProviderDrawer"
+        >
+          {{ tm('providerSelector.createProvider') }}
+        </v-btn>
+      </v-card-title>
+      
+      <v-card-text class="provider-selector-dialog__body">
+        <v-progress-linear v-if="loading" indeterminate color="primary"></v-progress-linear>
+
+        <div v-if="multiple && selectedProviders.length > 0" class="provider-selector-selected">
+          <div class="provider-selector-selected__caption">
+            {{ tm('providerSelector.selectedCount', { count: selectedProviders.length }) }}
+          </div>
+          <v-list density="compact" class="selected-order-list">
+            <v-list-item
+              v-for="(providerId, index) in selectedProviders"
+              :key="`selected-${providerId}-${index}`"
+              rounded="md"
+              class="ma-1"
+            >
+              <v-list-item-title>{{ providerId }}</v-list-item-title>
+              <template #append>
+                <div class="d-flex ga-1">
+                  <v-btn
+                    icon="mdi-arrow-up"
+                    size="x-small"
+                    variant="text"
+                    :disabled="index === 0"
+                    @click.stop="moveSelected(index, -1)"
+                  />
+                  <v-btn
+                    icon="mdi-arrow-down"
+                    size="x-small"
+                    variant="text"
+                    :disabled="index === selectedProviders.length - 1"
+                    @click.stop="moveSelected(index, 1)"
+                  />
+                  <v-btn
+                    icon="mdi-close"
+                    size="x-small"
+                    variant="text"
+                    @click.stop="removeSelected(providerId)"
+                  />
+                </div>
+              </template>
+            </v-list-item>
+          </v-list>
+          <v-divider class="ma-1"></v-divider>
+        </div>
+        
+        <v-list v-if="!loading && providerList.length > 0" density="compact" class="provider-selector-list">
+          <!-- 不选择选项 -->
+          <v-list-item
+            v-if="!multiple"
+            key="none"
+            value=""
+            @click="selectProvider({ id: '' })"
+            :active="selectedProvider === ''"
+            rounded="md"
+            class="provider-selector-list__item">
+            <v-list-item-title>{{ tm('providerSelector.clearSelection') }}</v-list-item-title>
+            <v-list-item-subtitle>{{ tm('providerSelector.clearSelectionSubtitle') }}</v-list-item-subtitle>
+            
+            <template v-slot:append>
+              <v-icon v-if="selectedProvider === ''">mdi-check-circle</v-icon>
+            </template>
+          </v-list-item>
+          
+          <v-divider class="provider-selector-divider"></v-divider>
+          
+          <v-list-item
+            v-for="provider in providerList"
+            :key="provider.id"
+            :value="provider.id"
+            @click="selectProvider(provider)"
+            :active="isProviderSelected(provider.id)"
+            rounded="md"
+            class="provider-selector-list__item">
+            <v-list-item-title>{{ provider.id }}</v-list-item-title>
+            <v-list-item-subtitle>
+              {{ provider.type || provider.provider_type || tm('providerSelector.unknownType') }}
+              <span v-if="provider.model">- {{ provider.model }}</span>
+              <span
+                v-if="capabilityBadges(provider).length || formatContextLimit(provider, metadataForProvider(provider))"
+                class="provider-selector-meta"
+              >
+                <v-tooltip
+                  v-for="item in capabilityBadges(provider)"
+                  :key="item.key"
+                  location="top"
+                  max-width="320"
+                >
+                  <template #activator="{ props: badgeTooltipProps }">
+                    <span
+                      v-bind="badgeTooltipProps"
+                      class="provider-selector-meta__badge"
+                      :class="{ 'provider-selector-meta__badge--disabled': !item.enabled }"
+                      @click.stop
+                    >
+                      <v-icon size="13">{{ item.icon }}</v-icon>
+                    </span>
+                  </template>
+                  <span>{{ item.tooltip }}</span>
+                </v-tooltip>
+                <v-tooltip
+                  v-if="formatContextLimit(provider, metadataForProvider(provider))"
+                  location="top"
+                  max-width="320"
+                >
+                  <template #activator="{ props: contextTooltipProps }">
+                    <span
+                      v-bind="contextTooltipProps"
+                      class="provider-selector-meta__context"
+                      @click.stop
+                    >
+                      {{ formatContextLimit(provider, metadataForProvider(provider)) }}
+                    </span>
+                  </template>
+                  <span>{{
+                    providerTm('models.metadata.context', {
+                      tokens: formatContextLimit(provider, metadataForProvider(provider))
+                    })
+                  }}</span>
+                </v-tooltip>
+              </span>
+            </v-list-item-subtitle>
+            
+            <template v-slot:append>
+              <div class="provider-selector-actions" @click.stop>
+                <v-tooltip location="top">
+                  <template #activator="{ props: testTooltipProps }">
+                    <v-btn
+                      v-bind="testTooltipProps"
+                      icon="mdi-connection"
+                      size="x-small"
+                      variant="text"
+                      :loading="isProviderTesting(provider.id)"
+                      :disabled="!isProviderTestable(provider)"
+                      @click.stop="testProvider(provider)"
+                    />
+                  </template>
+                  <span>{{ providerTm('models.testButton') }}</span>
+                </v-tooltip>
+                <v-icon v-if="isProviderSelected(provider.id)">mdi-check-circle</v-icon>
+              </div>
+            </template>
+          </v-list-item>
+        </v-list>
+        
+        <div v-else-if="!loading && providerList.length === 0" class="provider-selector-empty">
+          <v-icon size="64" color="grey-lighten-1">mdi-api-off</v-icon>
+          <p>{{ tm('providerSelector.noProviders') }}</p>
+        </div>
+      </v-card-text>
+      
+      <v-divider class="provider-selector-footer-divider"></v-divider>
+      
+      <v-card-actions class="provider-selector-dialog__actions">
+        <v-spacer></v-spacer>
+        <v-btn variant="tonal" class="provider-selector-secondary-btn" @click="cancelSelection">{{ tm('providerSelector.cancelSelection') }}</v-btn>
+        <v-btn 
+          color="primary" 
+          variant="flat"
+          class="provider-selector-primary-btn"
+          @click="confirmSelection">
+          {{ tm('providerSelector.confirmSelection') }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <v-overlay
+    v-model="providerDrawer"
+    class="provider-drawer-overlay"
+    location="right"
+    transition="slide-x-reverse-transition"
+    :scrim="true"
+    @click:outside="closeProviderDrawer"
+  >
+    <v-card class="provider-drawer-card" elevation="12">
+      <div class="provider-drawer-header">
+        <v-btn icon variant="text" @click="closeProviderDrawer">
+          <v-icon>mdi-close</v-icon>
+        </v-btn>
+      </div>
+      <div class="provider-drawer-content">
+        <ProviderChatCompletionPanel
+          v-if="defaultTab === 'chat_completion'"
+        />
+        <ProviderPage
+          v-else
+          :default-tab="defaultTab"
+          :show-all-provider-types="true"
+        />
+      </div>
+    </v-card>
+  </v-overlay>
+</template>
+
+<script setup>
+import { computed, ref, watch } from 'vue'
+import { providerApi } from '@/api/v1'
+import { useModuleI18n } from '@/i18n/composables'
+import { useToast } from '@/utils/toast'
+import { formatContextLimit, providerCapabilityBadges } from '@/utils/providerMetadata'
+import ProviderChatCompletionPanel from '@/components/provider/ProviderChatCompletionPanel.vue'
+import ProviderPage from '@/views/ProviderPage.vue'
+
+const props = defineProps({
+  modelValue: {
+    type: [String, Array],
+    default: ''
+  },
+  providerType: {
+    type: String,
+    default: 'chat_completion'
+  },
+  providerSubtype: {
+    type: String,
+    default: ''
+  },
+  buttonText: {
+    type: String,
+    default: ''
+  },
+  multiple: {
+    type: Boolean,
+    default: false
+  }
+})
+
+const emit = defineEmits(['update:modelValue'])
+const { tm } = useModuleI18n('core.shared')
+const { tm: providerTm } = useModuleI18n('features/provider')
+const { success: toastSuccess, error: toastError } = useToast()
+
+const dialog = ref(false)
+const providerList = ref([])
+const loading = ref(false)
+const selectedProvider = ref('')
+const selectedProviders = ref([])
+const providerDrawer = ref(false)
+const testingProviders = ref([])
+const modelMetadata = ref({})
+
+const hasSelection = computed(() => {
+  if (props.multiple) {
+    return selectedProviders.value.length > 0
+  }
+  return Boolean(props.modelValue)
+})
+
+const defaultTab = computed(() => {
+  if (props.providerType === 'agent_runner' && props.providerSubtype) {
+    return `select_agent_runner_provider:${props.providerSubtype}`
+  }
+  return props.providerType || 'chat_completion'
+})
+
+// 监听 modelValue 变化，同步到 selectedProvider
+watch(() => props.modelValue, (newValue) => {
+  if (props.multiple) {
+    selectedProviders.value = Array.isArray(newValue)
+      ? [...newValue.filter((v) => typeof v === 'string' && v)]
+      : []
+    return
+  }
+  selectedProvider.value = typeof newValue === 'string' ? newValue : ''
+}, { immediate: true })
+
+watch(providerDrawer, (isOpen, wasOpen) => {
+  if (!isOpen && wasOpen) {
+    loadProviders()
+  }
+})
+
+async function openDialog() {
+  if (props.multiple) {
+    selectedProviders.value = Array.isArray(props.modelValue)
+      ? [...props.modelValue.filter((v) => typeof v === 'string' && v)]
+      : []
+  } else {
+    selectedProvider.value = typeof props.modelValue === 'string' ? props.modelValue : ''
+  }
+  dialog.value = true
+  await loadProviders()
+}
+
+async function loadProviders() {
+  loading.value = true
+  try {
+    const response = await providerApi.listByProviderType(props.providerType)
+    if (response.data.status === 'ok') {
+      modelMetadata.value = response.data.model_metadata || {}
+      const providers = response.data.data || []
+      providerList.value = props.providerSubtype
+        ? providers.filter((provider) => matchesProviderSubtype(provider, props.providerSubtype))
+        : providers
+    }
+  } catch (error) {
+    console.error('加载提供商列表失败:', error)
+    providerList.value = []
+  } finally {
+    loading.value = false
+  }
+}
+
+function matchesProviderSubtype(provider, subtype) {
+  if (!subtype) {
+    return true
+  }
+  const normalized = String(subtype).toLowerCase()
+  const candidates = [provider.type, provider.provider, provider.id]
+    .filter(Boolean)
+    .map((value) => String(value).toLowerCase())
+  return candidates.includes(normalized)
+}
+
+function selectProvider(provider) {
+  if (props.multiple) {
+    if (!provider.id) {
+      selectedProviders.value = []
+      return
+    }
+    const idx = selectedProviders.value.indexOf(provider.id)
+    if (idx >= 0) {
+      selectedProviders.value.splice(idx, 1)
+    } else {
+      selectedProviders.value.push(provider.id)
+    }
+    return
+  }
+  selectedProvider.value = provider.id
+}
+
+function confirmSelection() {
+  if (props.multiple) {
+    emit('update:modelValue', [...selectedProviders.value])
+  } else {
+    emit('update:modelValue', selectedProvider.value)
+  }
+  dialog.value = false
+}
+
+function cancelSelection() {
+  if (props.multiple) {
+    selectedProviders.value = Array.isArray(props.modelValue)
+      ? [...props.modelValue.filter((v) => typeof v === 'string' && v)]
+      : []
+  } else {
+    selectedProvider.value = typeof props.modelValue === 'string' ? props.modelValue : ''
+  }
+  dialog.value = false
+}
+
+function isProviderSelected(providerId) {
+  if (props.multiple) {
+    return selectedProviders.value.includes(providerId)
+  }
+  return selectedProvider.value === providerId
+}
+
+function capabilityBadges(provider) {
+  return providerCapabilityBadges(provider, metadataForProvider(provider), providerTm)
+}
+
+function metadataForProvider(provider) {
+  return provider?.model ? modelMetadata.value[provider.model] || null : null
+}
+
+function isProviderTesting(providerId) {
+  return testingProviders.value.includes(providerId)
+}
+
+function isProviderTestable(provider) {
+  return Boolean(provider?.id) && provider.enable !== false && !isProviderTesting(provider.id)
+}
+
+async function testProvider(provider) {
+  if (!isProviderTestable(provider)) {
+    return
+  }
+  testingProviders.value.push(provider.id)
+  try {
+    const startTime = performance.now()
+    const response = await providerApi.test(String(provider.id))
+    if (response.data.status === 'ok' && response.data.data.error === null) {
+      const latency = Math.max(0, Math.round(performance.now() - startTime))
+      toastSuccess(providerTm('models.testSuccessWithLatency', {
+        id: provider.id,
+        latency
+      }))
+    } else {
+      throw new Error(response.data.data.error || providerTm('models.testError'))
+    }
+  } catch (error) {
+    toastError(error.response?.data?.message || error.message || providerTm('models.testError'))
+  } finally {
+    testingProviders.value = testingProviders.value.filter((id) => id !== provider.id)
+  }
+}
+
+function removeSelected(providerId) {
+  const idx = selectedProviders.value.indexOf(providerId)
+  if (idx >= 0) {
+    selectedProviders.value.splice(idx, 1)
+  }
+}
+
+function moveSelected(index, delta) {
+  const targetIndex = index + delta
+  if (
+    targetIndex < 0
+    || targetIndex >= selectedProviders.value.length
+    || index < 0
+    || index >= selectedProviders.value.length
+  ) {
+    return
+  }
+  const copied = [...selectedProviders.value]
+  const [item] = copied.splice(index, 1)
+  copied.splice(targetIndex, 0, item)
+  selectedProviders.value = copied
+}
+
+function openProviderDrawer() {
+  providerDrawer.value = true
+}
+
+function closeProviderDrawer() {
+  providerDrawer.value = false
+}
+</script>
+
+<style scoped>
+.provider-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: calc(100% - 80px);
+  display: inline-block;
+}
+
+.selected-preview {
+  width: 100%;
+  max-width: 100%;
+}
+
+.selected-order-list {
+  background: rgba(var(--v-theme-surface-variant), 0.15);
+  border-radius: 10px;
+}
+
+.provider-selector-dialog {
+  border: 1px solid rgba(var(--v-theme-border), 0.7);
+  border-radius: 18px !important;
+  background:
+    linear-gradient(180deg, rgba(var(--v-theme-primary), 0.04), transparent 180px),
+    rgb(var(--v-theme-surface));
+  box-shadow: 0 24px 70px rgba(17, 24, 39, 0.16) !important;
+  overflow: hidden;
+}
+
+.provider-selector-dialog__title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 20px 24px 12px !important;
+  color: rgb(var(--v-theme-primaryText));
+  font-size: 1.25rem;
+  font-weight: 720;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.provider-selector-create-btn,
+.provider-selector-primary-btn,
+.provider-selector-secondary-btn {
+  height: 40px;
+  max-height: 40px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.provider-selector-create-btn,
+.provider-selector-primary-btn {
+  box-shadow: 0 8px 18px rgba(var(--v-theme-primary), 0.16);
+}
+
+.provider-selector-secondary-btn {
+  border: 1px solid rgba(var(--v-theme-border), 0.9);
+  background: rgba(var(--v-theme-surface), 0.92);
+  color: rgba(var(--v-theme-on-surface), 0.74);
+}
+
+.provider-selector-dialog__body {
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 12px 20px 8px !important;
+}
+
+.provider-selector-selected {
+  padding: 0 0 12px;
+}
+
+.provider-selector-selected__caption {
+  margin-bottom: 8px;
+  color: rgba(var(--v-theme-on-surface), 0.62);
+  font-size: 12px;
+}
+
+.provider-selector-list {
+  border: 1px solid rgba(var(--v-theme-border), 0.7);
+  border-radius: 14px;
+  background: rgba(var(--v-theme-surface), 0.8);
+  padding: 6px !important;
+}
+
+.provider-selector-list__item {
+  min-height: 56px;
+  border-radius: 10px !important;
+  padding-inline: 16px !important;
+}
+
+.provider-selector-divider,
+.provider-selector-footer-divider {
+  border-color: rgba(var(--v-theme-border), 0.7);
+}
+
+.provider-selector-empty {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.56);
+}
+
+.provider-selector-empty p {
+  margin: 0;
+  font-size: 14px;
+}
+
+.provider-selector-dialog__actions {
+  padding: 14px 20px 18px !important;
+  gap: 10px;
+}
+
+.provider-selector-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.provider-selector-meta__badge {
+  display: inline-flex;
+  align-items: center;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+
+.provider-selector-meta__badge--disabled {
+  color: rgba(var(--v-theme-on-surface), 0.34);
+}
+
+.provider-selector-meta__context {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  color: rgba(var(--v-theme-on-surface), 0.72);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.provider-selector-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+}
+
+.v-list-item {
+  transition: all 0.2s ease;
+}
+
+.v-list-item:hover {
+  background-color: rgba(var(--v-theme-primary), 0.04);
+}
+
+.v-list-item.v-list-item--active {
+  background-color: rgba(var(--v-theme-primary), 0.08);
+}
+
+.provider-drawer-overlay {
+  align-items: stretch;
+  justify-content: flex-end;
+}
+
+.provider-drawer-card {
+  width: clamp(360px, 70vw, 1200px);
+  height: calc(100vh - 32px);
+  margin: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.provider-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px 20px;
+}
+
+.provider-drawer-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.provider-drawer-content > * {
+  height: 100%;
+  overflow: auto;
+}
+
+@media (max-width: 960px) {
+  .provider-drawer-card {
+    width: calc(100dvw - 24px);
+    height: calc(100dvh - 24px);
+    margin: 12px;
+  }
+}
+
+@media (max-width: 600px) {
+  .provider-name-text {
+    max-width: 100%;
+  }
+
+  .provider-drawer-overlay {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .provider-drawer-card {
+    width: 100dvw;
+    height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .provider-drawer-header {
+    padding: 8px 12px;
+  }
+
+  .provider-drawer-content {
+    overflow: auto;
+  }
+
+  :deep(.v-overlay__content) {
+    width: 100dvw;
+    max-width: 100dvw;
+    margin: 0;
+  }
+
+  :deep(.v-dialog > .v-overlay__content) {
+    width: calc(100dvw - 24px);
+    max-width: calc(100dvw - 24px);
+  }
+
+  .provider-selector-dialog__title {
+    padding: 18px 18px 10px !important;
+  }
+
+  .provider-selector-dialog__body {
+    padding: 10px 18px 8px !important;
+  }
+
+  .provider-selector-dialog__actions {
+    padding: 12px 18px 18px !important;
+  }
+}
+</style>

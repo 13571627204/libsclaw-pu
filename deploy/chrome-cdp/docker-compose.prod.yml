@@ -1,0 +1,77 @@
+# 共享浏览器服务栈(生产版,全局一份,常驻)
+#
+# 这是所有客户共用的浏览器后端:Chromium(带扩展+登录态) + 常驻 daemon + socat 暴露。
+# 客户容器通过 opencli-shared 网络,以 socat 桥接连到这里的 daemon。
+#
+# 启动前必须先创建共享网络(只需一次):
+#   docker network create opencli-shared
+#
+# 启动:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# 架构:
+#   chromium       Chromium + 扩展(命令行自动加载) + 登录态(chromium-config 卷)
+#                  加入 opencli-shared 网络,客户容器靠它的容器名 opencli-chromium 寻址
+#   opencli-daemon 前台跑 daemon.js,network_mode 共享 chromium 网络
+#                  → daemon 绑的 127.0.0.1:19825 == 扩展连的 127.0.0.1:19825
+#   daemon-proxy   socat,把 daemon 暴露到 chromium 网络栈的 0.0.0.0:19826
+#                  → 客户容器可经 opencli-chromium:19826 触达
+
+name: opencli-shared
+
+services:
+  chromium:
+    # 固定 KasmVNC 版本;latest 现在走 Selkies/Wayland,部分服务器访问 3001 会黑屏。
+    image: lscr.io/linuxserver/chromium:kasm
+    container_name: opencli-chromium
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      # 启动时自动加载扩展(开发者模式扩展重启会掉,故用命令行强制加载)
+      - CHROME_CLI=--load-extension=/config/opencli-extension --disable-features=DisableLoadExtensionCommandLineSwitch
+    volumes:
+      - ./chromium-config:/config     # profile/登录态/扩展 持久化
+    ports:
+      - "127.0.0.1:3000:3000"         # HTTP 网页VNC/WebSocket,仅本机,走 SSH 隧道
+      - "127.0.0.1:3001:3001"         # 网页VNC,仅本机,走 SSH 隧道
+    shm_size: "1gb"
+    restart: unless-stopped
+    networks:
+      - shared
+
+  opencli-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile.daemon
+      args:
+        TZ: Asia/Shanghai
+    image: opencli-daemon:1.8.3
+    container_name: opencli-daemon
+    # 共享 chromium 网络命名空间:daemon 与扩展同处一个 localhost:19825
+    network_mode: "service:chromium"
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    depends_on:
+      - chromium
+
+  daemon-proxy:
+    image: alpine/socat
+    container_name: opencli-daemon-proxy
+    # 同样共享 chromium 网络,把本地 daemon 暴露到网络栈 0.0.0.0:19826
+    network_mode: "service:chromium"
+    environment:
+      - TZ=Asia/Shanghai
+    command: TCP-LISTEN:19826,fork,reuseaddr TCP:127.0.0.1:19825
+    restart: unless-stopped
+    depends_on:
+      - opencli-daemon
+
+networks:
+  # 预先用 `docker network create opencli-shared` 创建,共享栈与客户栈都 external 引用
+  shared:
+    name: opencli-shared
+    external: true

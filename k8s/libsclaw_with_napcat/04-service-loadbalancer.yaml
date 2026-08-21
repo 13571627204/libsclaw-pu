@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: libsclaw-service-lb
+  namespace: libsclaw-ns
+  labels:
+    app: libsclaw-stack
+spec:
+  type: LoadBalancer
+  selector:
+    app: libsclaw-stack
+  ports:
+    - name: napcat-web
+      port: 6099
+      targetPort: 6099
+    - name: libsclaw-web
+      port: 6185
+      targetPort: 6185

@@ -1,0 +1,51 @@
+# OpenCLI daemon 桥接验证
+#
+# 验证「客户容器各自的 opencli CLI,通过 socat 桥接连到 Chromium 容器的唯一 daemon」是否可行。
+# 前提:opencli-ext 栈(opencli-chromium + 扩展 + daemon)已在运行。
+#
+# 拓扑:
+#   daemon-proxy   - 共享 chromium 网络,把 chromium 的 127.0.0.1:19825 暴露到 chromium-ip:19826
+#   customer-test  - 模拟客户容器,独立 netns(有自己的 127.0.0.1),装 opencli CLI
+#   customer-socat - 共享 customer-test 网络,把 customer 本地 127.0.0.1:19825 → chromium:19826
+#
+# 这样 customer 里的 opencli 连 127.0.0.1:19825(默认),经双层 socat 到达共享 daemon。
+
+name: opencli-bridge-verify
+
+services:
+  # 把 chromium 里的 daemon 暴露到网络(socat 纯 TCP 转发,鉴权头原样透传,403 不影响)
+  daemon-proxy:
+    image: alpine/socat
+    container_name: opencli-daemon-proxy
+    network_mode: "container:opencli-chromium"   # 进入 chromium 的网络命名空间
+    environment:
+      - TZ=Asia/Shanghai
+    command: TCP-LISTEN:19826,fork,reuseaddr TCP:127.0.0.1:19825
+    restart: unless-stopped
+
+  # 模拟一个客户容器:独立网络 + 自己的 opencli CLI
+  customer-test:
+    image: node:22-bookworm-slim
+    container_name: opencli-customer-test
+    environment:
+      - TZ=Asia/Shanghai
+    command: sleep infinity
+    networks:
+      - extnet
+
+  # 客户容器的 socat 边车:本地 127.0.0.1:19825 → chromium 容器的 19826
+  customer-socat:
+    image: alpine/socat
+    container_name: opencli-customer-socat
+    network_mode: "service:customer-test"        # 共享 customer-test 的 netns
+    environment:
+      - TZ=Asia/Shanghai
+    command: TCP-LISTEN:19825,fork,reuseaddr TCP:opencli-chromium:19826
+    depends_on:
+      - customer-test
+
+networks:
+  # 复用 opencli-ext 栈的网络,使 customer-test 能解析/到达 opencli-chromium
+  extnet:
+    name: opencli-ext_default
+    external: true

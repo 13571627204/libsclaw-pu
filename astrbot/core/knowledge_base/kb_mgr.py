@@ -1,0 +1,560 @@
+import asyncio
+from pathlib import Path
+
+from sqlalchemy.exc import IntegrityError  # type: ignore
+
+from astrbot.core import logger
+from astrbot.core.provider.manager import ProviderManager
+from astrbot.core.utils.astrbot_path import get_astrbot_knowledge_base_path
+
+# from .chunking.fixed_size import FixedSizeChunker
+from .chunking.recursive import RecursiveCharacterChunker
+from .kb_db_sqlite import KBSQLiteDatabase
+from .kb_helper import KBHelper
+from .models import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    KBDocument,
+    KnowledgeBase,
+)
+from .retrieval.manager import RetrievalManager, RetrievalResult
+from .retrieval.rank_fusion import RankFusion
+from .retrieval.sparse_retriever import SparseRetriever
+
+FILES_PATH = get_astrbot_knowledge_base_path()
+DB_PATH = Path(FILES_PATH) / "kb.db"
+"""Knowledge Base storage root directory"""
+CHUNKER = RecursiveCharacterChunker()
+_UNSET = object()
+
+
+class KnowledgeBaseManager:
+    kb_db: KBSQLiteDatabase
+    retrieval_manager: RetrievalManager
+
+    def __init__(
+        self,
+        provider_manager: ProviderManager,
+    ) -> None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.provider_manager = provider_manager
+        self._session_deleted_callback_registered = False
+
+        self.kb_insts: dict[str, KBHelper] = {}
+
+    async def initialize(self) -> None:
+        """初始化知识库模块"""
+        try:
+            # 初始化数据库
+            await self._init_kb_database()
+
+            # 初始化检索管理器
+            sparse_retriever = SparseRetriever(self.kb_db)
+            rank_fusion = RankFusion(self.kb_db)
+            self.retrieval_manager = RetrievalManager(
+                sparse_retriever=sparse_retriever,
+                rank_fusion=rank_fusion,
+                kb_db=self.kb_db,
+            )
+            await self.load_kbs()
+
+        except ImportError as e:
+            logger.error(f"知识库模块导入失败: {e}")
+            logger.warning("请确保已安装所需依赖: pypdf, aiofiles, Pillow, rank-bm25")
+        except Exception as e:
+            logger.error(f"知识库模块初始化失败: {e}", exc_info=True)
+
+    async def _init_kb_database(self) -> None:
+        self.kb_db = KBSQLiteDatabase(DB_PATH.as_posix())
+        await self.kb_db.initialize()
+        await self.kb_db.migrate_to_v1()
+        logger.info(f"KnowledgeBase database initialized: {DB_PATH}")
+
+    async def load_kbs(self) -> None:
+        """加载所有知识库实例"""
+        kb_records = await self.kb_db.list_kbs()
+        for record in kb_records:
+            kb_helper = KBHelper(
+                kb_db=self.kb_db,
+                kb=record,
+                provider_manager=self.provider_manager,
+                kb_root_dir=FILES_PATH,
+                chunker=CHUNKER,
+            )
+            try:
+                await kb_helper.initialize()
+            except Exception as e:
+                kb_helper.init_error = str(e)
+                logger.error(
+                    f"知识库 {record.kb_name}({record.kb_id}) 初始化失败: {e}",
+                    exc_info=True,
+                )
+            self.kb_insts[record.kb_id] = kb_helper
+
+    async def create_kb(
+        self,
+        kb_name: str,
+        description: str | None = None,
+        emoji: str | None = None,
+        embedding_provider_id: str | None = None,
+        rerank_provider_id: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        top_k_dense: int | None = None,
+        top_k_sparse: int | None = None,
+        top_m_final: int | None = None,
+    ) -> KBHelper:
+        """创建新的知识库实例"""
+        # 预先检查名称是否已存在，避免依赖异常字符串匹配
+        existing = await self.kb_db.get_kb_by_name(kb_name)
+        if existing:
+            raise ValueError(f"知识库名称 '{kb_name}' 已存在")
+
+        kb = KnowledgeBase(
+            kb_name=kb_name,
+            description=description,
+            emoji=emoji or "📚",
+            embedding_provider_id=embedding_provider_id,
+            rerank_provider_id=rerank_provider_id,
+            chunk_size=(chunk_size if chunk_size is not None else DEFAULT_CHUNK_SIZE),
+            chunk_overlap=(
+                chunk_overlap if chunk_overlap is not None else DEFAULT_CHUNK_OVERLAP
+            ),
+            top_k_dense=top_k_dense if top_k_dense is not None else 50,
+            top_k_sparse=top_k_sparse if top_k_sparse is not None else 50,
+            top_m_final=top_m_final if top_m_final is not None else 5,
+        )
+        try:
+            async with self.kb_db.get_db() as session:
+                session.add(kb)
+                await session.flush()
+
+                kb_helper = KBHelper(
+                    kb_db=self.kb_db,
+                    kb=kb,
+                    provider_manager=self.provider_manager,
+                    kb_root_dir=FILES_PATH,
+                    chunker=CHUNKER,
+                )
+                await kb_helper.initialize()
+                await session.commit()
+                self.kb_insts[kb.kb_id] = kb_helper
+                return kb_helper
+        except IntegrityError as e:
+            logger.exception("创建知识库失败：唯一约束冲突")
+            raise ValueError(f"知识库名称 '{kb_name}' 已存在") from e
+        except Exception:
+            logger.exception("创建知识库失败")
+            raise
+
+    async def get_kb(self, kb_id: str) -> KBHelper | None:
+        """获取知识库实例"""
+        if kb_id in self.kb_insts:
+            return self.kb_insts[kb_id]
+
+    async def get_kb_by_name(self, kb_name: str) -> KBHelper | None:
+        """通过名称获取知识库实例"""
+        for kb_helper in self.kb_insts.values():
+            if kb_helper.kb.kb_name == kb_name:
+                return kb_helper
+        return None
+
+    async def delete_kb(self, kb_id: str) -> bool:
+        """删除知识库实例"""
+        kb_helper = await self.get_kb(kb_id)
+        if not kb_helper:
+            return False
+
+        await kb_helper.delete_vec_db()
+        async with self.kb_db.get_db() as session:
+            await session.delete(kb_helper.kb)
+            await session.commit()
+
+        self.kb_insts.pop(kb_id, None)
+        return True
+
+    async def list_kbs(self) -> list[KnowledgeBase]:
+        """列出所有知识库实例"""
+        kbs = [kb_helper.kb for kb_helper in self.kb_insts.values()]
+        return kbs
+
+    async def update_kb(
+        self,
+        kb_id: str,
+        kb_name: str,
+        description: str | None = None,
+        emoji: str | None = None,
+        embedding_provider_id: str | None | object = _UNSET,
+        rerank_provider_id: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+        top_k_dense: int | None = None,
+        top_k_sparse: int | None = None,
+        top_m_final: int | None = None,
+    ) -> KBHelper | None:
+        """Update a knowledge base and atomically switch its runtime helper.
+
+        Args:
+            kb_id: Stable knowledge base identifier.
+            kb_name: Updated display name.
+            description: Updated optional description.
+            emoji: Updated optional emoji.
+            embedding_provider_id: Embedding provider identifier, explicit
+                ``None`` to disable embeddings, or an internal unset sentinel.
+            rerank_provider_id: Optional reranking provider identifier.
+            chunk_size: Markdown chunk size.
+            chunk_overlap: Markdown chunk overlap.
+            top_k_dense: Dense retrieval candidate count.
+            top_k_sparse: Sparse retrieval candidate count.
+            top_m_final: Final retrieval result count.
+
+        Returns:
+            The active helper, or ``None`` when the knowledge base does not exist.
+
+        Raises:
+            Exception: If persisting the updated metadata fails after the new
+                helper has been prepared. The old helper and index are restored.
+        """
+        kb_helper = await self.get_kb(kb_id)
+        if not kb_helper:
+            return None
+
+        kb = kb_helper.kb
+        previous_state = {
+            "kb_name": kb.kb_name,
+            "description": kb.description,
+            "emoji": kb.emoji,
+            "embedding_provider_id": kb.embedding_provider_id,
+            "rerank_provider_id": kb.rerank_provider_id,
+            "chunk_size": kb.chunk_size,
+            "chunk_overlap": kb.chunk_overlap,
+            "top_k_dense": kb.top_k_dense,
+            "top_k_sparse": kb.top_k_sparse,
+            "top_m_final": kb.top_m_final,
+        }
+        previous_init_error = kb_helper.init_error
+        # Rebuild the SQLModel instance so SQLAlchemy creates fresh ORM state.
+        # Deep-copying a loaded entity leaves the copy with broken weak references.
+        candidate_kb = KnowledgeBase.model_validate(kb.model_dump())
+        if kb_name is not None:
+            candidate_kb.kb_name = kb_name
+        if description is not None:
+            candidate_kb.description = description
+        if emoji is not None:
+            candidate_kb.emoji = emoji
+        if embedding_provider_id is not _UNSET:
+            candidate_kb.embedding_provider_id = embedding_provider_id  # type: ignore[assignment]
+        candidate_kb.rerank_provider_id = rerank_provider_id  # 允许设置为 None
+        if chunk_size is not None:
+            candidate_kb.chunk_size = chunk_size
+        if chunk_overlap is not None:
+            candidate_kb.chunk_overlap = chunk_overlap
+        if top_k_dense is not None:
+            candidate_kb.top_k_dense = top_k_dense
+        if top_k_sparse is not None:
+            candidate_kb.top_k_sparse = top_k_sparse
+        if top_m_final is not None:
+            candidate_kb.top_m_final = top_m_final
+
+        rebuild_required = any(
+            (
+                candidate_kb.embedding_provider_id != kb.embedding_provider_id,
+                candidate_kb.chunk_size != kb.chunk_size,
+                candidate_kb.chunk_overlap != kb.chunk_overlap,
+            )
+        )
+
+        # Build a new helper first. Keep current vec_db alive until new init succeeds.
+        new_helper = KBHelper(
+            kb_db=self.kb_db,
+            kb=candidate_kb,
+            provider_manager=self.provider_manager,
+            kb_root_dir=FILES_PATH,
+            chunker=CHUNKER,
+        )
+
+        old_store = getattr(kb_helper, "wiki_store", None)
+        shared_operation_lock = getattr(old_store, "_operation_lock", None)
+        if not isinstance(shared_operation_lock, asyncio.Lock):
+            shared_operation_lock = None
+        operation_lock_acquired = False
+        try:
+            if shared_operation_lock is not None:
+                await shared_operation_lock.acquire()
+                operation_lock_acquired = True
+
+            try:
+                await new_helper.initialize()
+                if shared_operation_lock is not None:
+                    new_helper.wiki_store._operation_lock = shared_operation_lock
+                    if (
+                        rebuild_required
+                        and getattr(
+                            new_helper.wiki_store,
+                            "_last_initialize_rebuilt",
+                            False,
+                        )
+                        is not True
+                    ):
+                        await new_helper.wiki_store._rebuild_index_locked()
+                elif (
+                    rebuild_required
+                    and getattr(
+                        new_helper.wiki_store,
+                        "_last_initialize_rebuilt",
+                        False,
+                    )
+                    is not True
+                ):
+                    await new_helper.wiki_store.rebuild_index()
+            except Exception as e:
+                await new_helper.terminate()
+                if rebuild_required and hasattr(kb_helper, "wiki_store"):
+                    try:
+                        if operation_lock_acquired:
+                            await kb_helper.wiki_store._rebuild_index_locked()
+                        else:
+                            await kb_helper.wiki_store.rebuild_index()
+                    except Exception as restore_exc:
+                        logger.error(
+                            f"Failed to restore the previous index for knowledge base "
+                            f"{kb.kb_name}({kb.kb_id}): "
+                            f"{restore_exc}",
+                            exc_info=True,
+                        )
+                kb_helper.init_error = previous_init_error
+                logger.error(
+                    f"Failed to reinitialize or rebuild knowledge base "
+                    f"{kb.kb_name}({kb.kb_id}); keeping the previous instance: {e}",
+                    exc_info=True,
+                )
+                return kb_helper
+
+            for field, value in {
+                "kb_name": candidate_kb.kb_name,
+                "description": candidate_kb.description,
+                "emoji": candidate_kb.emoji,
+                "embedding_provider_id": candidate_kb.embedding_provider_id,
+                "rerank_provider_id": candidate_kb.rerank_provider_id,
+                "chunk_size": candidate_kb.chunk_size,
+                "chunk_overlap": candidate_kb.chunk_overlap,
+                "top_k_dense": candidate_kb.top_k_dense,
+                "top_k_sparse": candidate_kb.top_k_sparse,
+                "top_m_final": candidate_kb.top_m_final,
+            }.items():
+                setattr(kb, field, value)
+
+            try:
+                async with self.kb_db.get_db() as session:
+                    session.add(kb)
+                    await session.commit()
+            except Exception:
+                for field, value in previous_state.items():
+                    setattr(kb, field, value)
+                await new_helper.terminate()
+                if rebuild_required and hasattr(kb_helper, "wiki_store"):
+                    try:
+                        if operation_lock_acquired:
+                            await kb_helper.wiki_store._rebuild_index_locked()
+                        else:
+                            await kb_helper.wiki_store.rebuild_index()
+                    except Exception as restore_exc:
+                        logger.error(
+                            f"Failed to restore the previous index for knowledge base "
+                            f"{kb.kb_name}({kb.kb_id}) after the configuration commit "
+                            f"failed: {restore_exc}",
+                            exc_info=True,
+                        )
+                kb_helper.init_error = previous_init_error
+                raise
+
+            old_helper = kb_helper
+            new_helper.kb = kb
+            self.kb_insts[kb_id] = new_helper
+            try:
+                await old_helper.terminate()
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to close the previous knowledge base instance "
+                    f"{kb.kb_name}({kb.kb_id}): {exc}"
+                )
+            new_helper.init_error = None
+            return new_helper
+        finally:
+            if operation_lock_acquired and shared_operation_lock is not None:
+                shared_operation_lock.release()
+
+    async def retrieve(
+        self,
+        query: str,
+        kb_names: list[str] | None = None,
+        kb_ids: list[str] | None = None,
+        top_k_fusion: int = 20,
+        top_m_final: int = 5,
+    ) -> dict | None:
+        """Retrieve content from selected knowledge bases.
+
+        Args:
+            query: User search query.
+            kb_names: Legacy knowledge base name selection.
+            kb_ids: Stable knowledge base identifier selection.
+            top_k_fusion: Maximum candidates after rank fusion.
+            top_m_final: Maximum final result count.
+
+        Returns:
+            Formatted context and retrieval results when matches exist.
+
+        Raises:
+            ValueError: If every requested knowledge base is unavailable.
+        """
+        selected_ids: list[str] = []
+        kb_id_helper_map = {}
+        unavailable_kbs = []
+        for kb_id in kb_ids or []:
+            kb_helper = await self.get_kb(kb_id)
+            if kb_helper:
+                if kb_helper.init_error:
+                    unavailable_kbs.append((kb_helper.kb.kb_name, kb_helper.init_error))
+                    logger.warning(
+                        f"Knowledge base {kb_helper.kb.kb_name} is unavailable: "
+                        f"{kb_helper.init_error}"
+                    )
+                    continue
+                selected_ids.append(kb_helper.kb.kb_id)
+                kb_id_helper_map[kb_helper.kb.kb_id] = kb_helper
+            else:
+                logger.warning(
+                    f"Knowledge base {kb_id} does not exist or is not loaded"
+                )
+
+        for kb_name in kb_names or []:
+            if kb_helper := await self.get_kb_by_name(kb_name):
+                if kb_helper.init_error:
+                    unavailable_kbs.append((kb_name, kb_helper.init_error))
+                    logger.warning(f"知识库 {kb_name} 不可用: {kb_helper.init_error}")
+                    continue
+                if kb_helper.kb.kb_id not in kb_id_helper_map:
+                    selected_ids.append(kb_helper.kb.kb_id)
+                    kb_id_helper_map[kb_helper.kb.kb_id] = kb_helper
+
+        # all requested KBs are unavailable
+        if not selected_ids and unavailable_kbs:
+            errors = "; ".join(f"{n}: {e}" for n, e in unavailable_kbs)
+            raise ValueError(f"所有请求的知识库均不可用: {errors}")
+
+        if not selected_ids:
+            return {}
+
+        results = await self.retrieval_manager.retrieve(
+            query=query,
+            kb_ids=selected_ids,
+            kb_id_helper_map=kb_id_helper_map,
+            top_k_fusion=top_k_fusion,
+            top_m_final=top_m_final,
+        )
+        if not results:
+            return None
+
+        context_text = self._format_context(results)
+
+        results_dict = [
+            {
+                "chunk_id": r.chunk_id,
+                "doc_id": r.doc_id,
+                "kb_id": r.kb_id,
+                "kb_name": r.kb_name,
+                "doc_name": r.doc_name,
+                "chunk_index": r.metadata.get("chunk_index", 0),
+                "content": r.content,
+                "score": r.score,
+                "char_count": r.metadata.get("char_count", 0),
+            }
+            for r in results
+        ]
+
+        return {
+            "context_text": context_text,
+            "results": results_dict,
+        }
+
+    def _format_context(self, results: list[RetrievalResult]) -> str:
+        """格式化知识上下文
+
+        Args:
+            results: 检索结果列表
+
+        Returns:
+            str: 格式化的上下文文本
+
+        """
+        lines = ["以下是相关的知识库内容,请参考这些信息回答用户的问题:\n"]
+
+        for i, result in enumerate(results, 1):
+            lines.append(f"【知识 {i}】")
+            lines.append(f"来源: {result.kb_name} / {result.doc_name}")
+            lines.append(f"内容: {result.content}")
+            lines.append(f"相关度: {result.score:.2f}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    async def terminate(self) -> None:
+        """终止所有知识库实例,关闭数据库连接"""
+        for kb_id, kb_helper in self.kb_insts.items():
+            try:
+                await kb_helper.terminate()
+            except Exception as e:
+                logger.error(f"关闭知识库 {kb_id} 失败: {e}")
+
+        self.kb_insts.clear()
+
+        # 关闭元数据数据库
+        if hasattr(self, "kb_db") and self.kb_db:
+            try:
+                await self.kb_db.close()
+            except Exception as e:
+                logger.error(f"关闭知识库元数据数据库失败: {e}")
+
+    async def upload_from_url(
+        self,
+        kb_id: str,
+        url: str,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+        batch_size: int = 32,
+        tasks_limit: int = 3,
+        max_retries: int = 3,
+        progress_callback=None,
+    ) -> KBDocument:
+        """从 URL 上传文档到指定的知识库
+
+        Args:
+            kb_id: 知识库 ID
+            url: 要提取内容的网页 URL
+            chunk_size: 文本块大小
+            chunk_overlap: 文本块重叠大小
+            batch_size: 批处理大小
+            tasks_limit: 并发任务限制
+            max_retries: 最大重试次数
+            progress_callback: 进度回调函数
+
+        Returns:
+            KBDocument: 上传的文档对象
+
+        Raises:
+            ValueError: 如果知识库不存在或 URL 为空
+            IOError: 如果网络请求失败
+        """
+        kb_helper = await self.get_kb(kb_id)
+        if not kb_helper:
+            raise ValueError(f"Knowledge base with id {kb_id} not found.")
+
+        return await kb_helper.upload_from_url(
+            url=url,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            batch_size=batch_size,
+            tasks_limit=tasks_limit,
+            max_retries=max_retries,
+            progress_callback=progress_callback,
+        )

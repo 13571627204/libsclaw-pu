@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: libsclaw-data-pvc
+  namespace: libsclaw-standalone-ns
+  labels:
+    app: libsclaw-standalone
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard # uncomment and set proper StorageClass

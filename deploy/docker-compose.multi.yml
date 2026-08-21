@@ -1,0 +1,58 @@
+# 多客户专用 compose 文件。
+# 通过 docker compose -p <项目名> --env-file <客户.env> 启动,实现多容器隔离。
+# 所有会冲突的全局资源(容器名/端口/数据目录)都已参数化,由客户的 .env 注入。
+# 不要直接 `docker compose up`,请用 deploy/customer.sh 脚本。
+
+services:
+  libsclaw:
+    # 镜像共用一份(只构建一次),所有客户复用,节省磁盘与构建时间
+    image: ${LIBSCLAW_IMAGE:-libsclaw:local}
+    # 容器名带客户标识,避免冲突。CUSTOMER 由 .env 注入
+    container_name: libsclaw-${CUSTOMER}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # 宿主机端口由 .env 指定(每个客户不同),容器内固定 6185/6199
+      - "${WEB_PORT}:6185"          # WebUI
+      - "${NAPCAT_PORT}:6199"       # OneBot v11 Napcat WebSocket(可选,不用不影响)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:6185/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    environment:
+      # 只保留容器运行必需的「部署级」固定项。
+      # 业务配置(模型 / 各 API Key / 渠道 / 密码等)一律在 Web 界面填,
+      # 存入该客户的 data/ 目录,不经环境变量注入。
+      TZ: "Asia/Shanghai"
+    volumes:
+      # 每个客户独立的数据目录(配置/数据库/插件全在里面)
+      - ${CUSTOMER_DIR}/data:/LibsClaw/data
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - default                     # 客户自己的隔离网络(出站访问 API 等)
+      - opencli                     # 加入共享网络,以触达 opencli-chromium
+
+  # opencli daemon 桥接边车:透明把本容器的 127.0.0.1:19825 转发到共享 daemon。
+  # 共享 libsclaw 的网络栈,所以容器里的 opencli CLI 连本机 19825 时无感命中这里,
+  # 经 socat → opencli-chromium:19826 → 共享 daemon → 扩展 → 浏览器。
+  # 因此调用方无需任何改动(CLI 仍连默认的本机 19825)。
+  opencli-socat:
+    image: alpine/socat
+    container_name: libsclaw-${CUSTOMER}-opencli-socat
+    network_mode: "service:libsclaw"  # 共享 libsclaw 网络命名空间
+    environment:
+      TZ: "Asia/Shanghai"
+    command: TCP-LISTEN:19825,fork,reuseaddr TCP:opencli-chromium:19826
+    restart: unless-stopped
+    depends_on:
+      - libsclaw
+
+networks:
+  default:
+  # 共享浏览器服务栈的网络(由 docker network create opencli-shared 预创建)
+  opencli:
+    name: opencli-shared
+    external: true

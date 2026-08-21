@@ -1,0 +1,23 @@
+# 共享 opencli daemon 服务镜像
+# 把 opencli 1.8.3 装进镜像(不靠运行时 npm install,容器重建不丢)。
+# 这个容器与 chromium 共享网络命名空间,提供常驻 daemon,所有客户的 opencli CLI 都连它。
+FROM node:22-bookworm-slim
+
+# pin 1.8.3 以匹配扩展 v1.0.19(兼容 >=1.7.0)并与客户侧 CLI 版本统一
+ARG OPENCLI_VERSION=1.8.3
+ARG TZ=Asia/Shanghai
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV TZ=${TZ}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
+    && echo "${TZ}" > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g @jackwener/opencli@${OPENCLI_VERSION}
+
+COPY daemon-entrypoint.sh /daemon-entrypoint.sh
+RUN chmod +x /daemon-entrypoint.sh
+
+ENTRYPOINT ["/daemon-entrypoint.sh"]
