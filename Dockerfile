@@ -17,6 +17,8 @@ COPY pyproject.toml /build/pyproject.toml
 COPY dashboard/ ./
 
 # 跳过 vue-tsc 类型检查(类型检查在本地/CI 做),只做产物构建
+# 小内存服务器构建 vite 易 OOM,给 Node 加大堆内存上限(配合宿主机 swap)
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN node scripts/subset-mdi-font.mjs \
     && pnpm exec vite build \
     && node scripts/write-dist-version.mjs
