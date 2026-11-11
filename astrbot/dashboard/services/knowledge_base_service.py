@@ -242,6 +242,7 @@ class KnowledgeBaseService:
             result = await kb_helper.import_wiki_sources(
                 sources,
                 overwrite=overwrite,
+                skip_existing=not overwrite,
             )
             self.update_progress(
                 task_id,
@@ -261,6 +262,10 @@ class KnowledgeBaseService:
                     "failed_count": 0,
                 },
             )
+        except FileExistsError:
+            message = "导入路径已存在，请检查文件路径，或勾选覆盖已有页面后重试。"
+            logger.warning("Wiki import task %s has an existing path conflict", task_id)
+            self.set_task_result(task_id, "failed", error=message)
         except Exception as exc:
             logger.error("Wiki import task %s failed: %s", task_id, exc, exc_info=True)
             self.set_task_result(task_id, "failed", error=str(exc))

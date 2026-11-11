@@ -5,16 +5,21 @@ export const useRouterLoadingStore = defineStore('routerLoading', () => {
     const isLoading = ref(false);
     const progress = ref(0);
     let progressInterval: ReturnType<typeof setInterval> | null = null;
+    let hideTimer: ReturnType<typeof setTimeout> | null = null;
 
     function start() {
+        if (hideTimer) {
+            clearTimeout(hideTimer);
+            hideTimer = null;
+        }
         isLoading.value = true;
-        progress.value = 0;
+        progress.value = 12;
 
         if (progressInterval) {
             clearInterval(progressInterval);
         }
 
-        let currentProgress = 0;
+        let currentProgress = 12;
         progressInterval = setInterval(() => {
             if (currentProgress < 80) {
                 // 快速阶段：0-80%
@@ -43,11 +48,12 @@ export const useRouterLoadingStore = defineStore('routerLoading', () => {
         // 快速完成到100%
         progress.value = 100;
 
-        // 延迟隐藏，让用户看到100%
-        setTimeout(() => {
+        // Keep the completion flash brief so fast navigations still feel instant.
+        hideTimer = setTimeout(() => {
             isLoading.value = false;
             progress.value = 0;
-        }, 300);
+            hideTimer = null;
+        }, 120);
     }
 
     return {

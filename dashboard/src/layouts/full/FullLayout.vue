@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { RouterView, useRoute } from "vue-router";
-import { ref, onMounted, computed, watch } from "vue";
+import { ref, onMounted, computed, watch, defineAsyncComponent } from "vue";
 import VerticalSidebarVue from "./vertical-sidebar/VerticalSidebar.vue";
 import VerticalHeaderVue from "./vertical-header/VerticalHeader.vue";
-import ReadmeDialog from "@/components/shared/ReadmeDialog.vue";
-import Chat from "@/components/chat/Chat.vue";
 import { useCustomizerStore } from "@/stores/customizer";
 import { useRouterLoadingStore } from "@/stores/routerLoading";
 import { useCommonStore } from "@/stores/common";
 import { statsApi } from "@/api/v1";
 import { useI18n } from "@/i18n/composables";
+
+const Chat = defineAsyncComponent(() => import("@/components/chat/Chat.vue"));
+const ReadmeDialog = defineAsyncComponent(
+  () => import("@/components/shared/ReadmeDialog.vue"),
+);
 
 const FIRST_NOTICE_SEEN_KEY = "astrbot:first_notice_seen:v1";
 
@@ -146,6 +149,7 @@ onMounted(() => {
       </v-main>
 
       <ReadmeDialog
+        v-if="showFirstNoticeDialog"
         :show="showFirstNoticeDialog"
         mode="first-notice"
         @update:show="onFirstNoticeDialogUpdate"

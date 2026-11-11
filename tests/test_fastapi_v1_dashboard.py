@@ -1108,13 +1108,13 @@ async def test_dashboard_static_dist_files_are_served(
     static_folder = tmp_path / "dist"
     assets_folder = static_folder / "assets"
     assets_folder.mkdir(parents=True)
+    (static_folder / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
     (static_folder / "index.html").write_text(
-        '<script type="module" src="/assets/index-demo.js"></script>',
+        '<script type="module" src="/assets/index-demo1234.js"></script>',
         encoding="utf-8",
     )
-    (static_folder / "favicon.svg").write_text("<svg></svg>", encoding="utf-8")
-    (assets_folder / "index-demo.js").write_text(
-        "window.__astrbotStaticTest = true;",
+    (assets_folder / "index-demo1234.js").write_text(
+        "window.__astrbotStaticTest = true;" + "x" * 2048,
         encoding="utf-8",
     )
     (tmp_path / "secret.txt").write_text("outside static root", encoding="utf-8")
@@ -1130,7 +1130,10 @@ async def test_dashboard_static_dist_files_are_served(
         transport=transport,
         base_url="http://testserver",
     ) as client:
-        asset_response = await client.get("/assets/index-demo.js")
+        asset_response = await client.get(
+            "/assets/index-demo1234.js",
+            headers={"Accept-Encoding": "gzip"},
+        )
         favicon_response = await client.get("/favicon.svg")
         page_response = await client.get("/config")
         missing_response = await client.get("/assets/missing.js")
@@ -1139,10 +1142,18 @@ async def test_dashboard_static_dist_files_are_served(
 
     assert asset_response.status_code == 200
     assert "window.__astrbotStaticTest" in asset_response.text
+    assert asset_response.headers["cache-control"] == (
+        "public, max-age=31536000, immutable"
+    )
+    assert asset_response.headers["content-encoding"] == "gzip"
     assert favicon_response.status_code == 200
     assert favicon_response.text == "<svg></svg>"
+    assert favicon_response.headers["cache-control"] == "public, max-age=3600"
     assert page_response.status_code == 200
-    assert "/assets/index-demo.js" in page_response.text
+    assert page_response.headers["cache-control"] == (
+        "no-cache, max-age=0, must-revalidate"
+    )
+    assert "/assets/index-demo1234.js" in page_response.text
     assert missing_response.status_code == 404
     assert traversal_response.status_code == 404
     assert api_response.status_code == 404

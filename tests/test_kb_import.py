@@ -191,6 +191,56 @@ async def test_import_documents(
 
 
 @pytest.mark.asyncio
+async def test_delete_kb_releases_wiki_db_and_survives_transient_lock(tmp_path):
+    """删除知识库必须关闭 wiki.db 连接；目录被占用时给出可读错误且保留数据。"""
+    from astrbot.core.knowledge_base.kb_db_sqlite import KBSQLiteDatabase
+    from astrbot.core.knowledge_base.kb_helper import KBHelper
+    from astrbot.core.knowledge_base.models import KnowledgeBase
+    from astrbot.core.knowledge_base.wiki import WikiStore
+
+    db = KBSQLiteDatabase(str(tmp_path / "kb_meta.db"))
+    await db.initialize()
+    try:
+        await db.migrate_to_v1()
+    except Exception:
+        pass
+
+    helper = KBHelper(
+        kb_db=db,
+        kb=KnowledgeBase(kb_name="待删除库", emoji="📚"),
+        provider_manager=MagicMock(),
+        kb_root_dir=str(tmp_path / "files"),
+        chunker=None,
+    )
+    await helper.initialize()
+    assert (helper.kb_dir / "index" / "wiki.db").is_file()
+
+    await helper.delete_vec_db()
+    assert not helper.kb_dir.exists()
+
+    # 同目录存在未关闭连接（更新切换泄漏或并发任务）时：删除必须给出
+    # 可读错误、保留目录，待占用释放后可重试成功
+    helper = KBHelper(
+        kb_db=db,
+        kb=KnowledgeBase(kb_name="待删除库2", emoji="📚"),
+        provider_manager=MagicMock(),
+        kb_root_dir=str(tmp_path / "files"),
+        chunker=None,
+    )
+    await helper.initialize()
+    leaked = WikiStore(kb_dir=helper.kb_dir, kb_id=helper.kb.kb_id)
+    await leaked.initialize()
+    try:
+        with pytest.raises(ValueError, match="占用"):
+            await helper.delete_vec_db()
+        assert helper.kb_dir.exists()
+    finally:
+        await leaked.close()
+    await helper.delete_vec_db()
+    assert not helper.kb_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_import_documents_returns_friendly_failure_message(
     core_lifecycle_td: AstrBotCoreLifecycle,
 ):

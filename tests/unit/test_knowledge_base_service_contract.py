@@ -808,6 +808,72 @@ async def test_upload_document_uses_knowledge_base_chunk_configuration(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("imported_count", [0, 1])
+async def test_background_wiki_import_reports_skips_and_cleans_staging(
+    tmp_path, overwrite, imported_count
+):
+    service = make_service(MagicMock())
+    staging_dir = tmp_path / "wiki-import-staging"
+    staging_dir.mkdir()
+    source = staging_dir / "bluebook.md"
+    source.write_text("# Bluebook", encoding="utf-8")
+    sources = [(source, "中睿26年医健产业蓝皮书.md")]
+    skipped = [{"path": "existing.md", "reason": "exists"}] if not overwrite else []
+    result = {
+        "imported": [{"path": "new.md"}] * imported_count,
+        "imported_count": imported_count,
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+    }
+    helper = SimpleNamespace(import_wiki_sources=AsyncMock(return_value=result))
+
+    await service.background_wiki_import_task(
+        "task-1", helper, sources, overwrite, staging_dir
+    )
+
+    helper.import_wiki_sources.assert_awaited_once_with(
+        sources, overwrite=overwrite, skip_existing=not overwrite
+    )
+    task = service.upload_tasks["task-1"]
+    assert task["status"] == "completed"
+    assert task["error"] is None
+    assert task["result"]["success_count"] == imported_count
+    assert task["result"]["failed_count"] == 0
+    assert task["result"]["skipped"] == skipped
+    assert task["result"]["skipped_count"] == len(skipped)
+    assert service.upload_progress["task-1"]["status"] == "completed"
+    assert not staging_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_background_wiki_import_handles_file_conflict_without_traceback(
+    tmp_path, monkeypatch
+):
+    service = make_service(MagicMock())
+    staging_dir = tmp_path / "wiki-import-conflict"
+    staging_dir.mkdir()
+    helper = SimpleNamespace(
+        import_wiki_sources=AsyncMock(side_effect=FileExistsError("existing.md"))
+    )
+    logger = MagicMock()
+    monkeypatch.setattr(
+        "astrbot.dashboard.services.knowledge_base_service.logger", logger
+    )
+
+    await service.background_wiki_import_task(
+        "conflict", helper, [], False, staging_dir
+    )
+
+    task = service.upload_tasks["conflict"]
+    assert task["status"] == "failed"
+    assert "覆盖" in task["error"]
+    logger.warning.assert_called_once()
+    logger.error.assert_not_called()
+    assert not staging_dir.exists()
+
+
+@pytest.mark.asyncio
 async def test_import_wiki_preserves_file_and_path_order_for_staging(
     tmp_path,
     monkeypatch,

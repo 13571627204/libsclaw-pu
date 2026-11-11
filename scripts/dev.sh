@@ -15,6 +15,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DASHBOARD_DIR="$PROJECT_ROOT/dashboard"
+FRONTEND_REQUIRED_FILES=(
+  "$DASHBOARD_DIR/node_modules/.bin/vite"
+  "$DASHBOARD_DIR/node_modules/@mdi/font/css/materialdesignicons.css"
+  "$DASHBOARD_DIR/node_modules/@mdi/font/fonts/materialdesignicons-webfont.ttf"
+  "$DASHBOARD_DIR/node_modules/subset-font/package.json"
+)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -24,6 +30,25 @@ NC='\033[0m'
 log()  { printf "%b[dev]%b %s\n" "$CYAN" "$NC" "$*"; }
 ok()   { printf "%b[dev]%b %s\n" "$GREEN" "$NC" "$*"; }
 err()  { printf "%b[dev]%b %s\n" "$RED" "$NC" "$*" >&2; }
+
+get_missing_frontend_dependencies() {
+  local required_file
+  for required_file in "${FRONTEND_REQUIRED_FILES[@]}"; do
+    if [[ ! -f "$required_file" ]]; then
+      printf '%s\n' "$required_file"
+    fi
+  done
+}
+
+frontend_dependencies_are_missing() {
+  local required_file
+  for required_file in "${FRONTEND_REQUIRED_FILES[@]}"; do
+    if [[ ! -f "$required_file" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 # Backend output filter: credential lines (Username / password) are shown in
 # green, error lines in red; everything else only goes to the log file.
@@ -66,10 +91,22 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
     log "Backend dependencies are missing; running uv sync..."
     uv sync
   fi
-  if [[ ! -d "$DASHBOARD_DIR/node_modules" ]]; then
-    log "Frontend dependencies are missing; running pnpm install..."
-    (cd "$DASHBOARD_DIR" && pnpm install)
+  if frontend_dependencies_are_missing; then
+    log "Frontend dependencies are missing or incomplete; running pnpm install..."
+    if ! (cd "$DASHBOARD_DIR" && pnpm install); then
+      err "pnpm install failed; frontend cannot be started."
+      exit 1
+    fi
   fi
+fi
+
+# Validate the exact files used by the development command even when
+# installation was explicitly skipped. node_modules may exist but be partial.
+if frontend_dependencies_are_missing; then
+  err "Frontend dependencies are still incomplete. Missing files:"
+  get_missing_frontend_dependencies | sed 's/^/  /' >&2
+  err "Run 'pnpm install' in the dashboard directory, or unset SKIP_INSTALL."
+  exit 1
 fi
 
 BACKEND_BASE_PORT="${DEV_BACKEND_PORT:-6185}"

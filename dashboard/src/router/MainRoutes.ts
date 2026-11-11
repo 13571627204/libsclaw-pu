@@ -128,6 +128,11 @@ const MainRoutes = {
         }
       ]
     },
+    {
+      name: 'PharmaTranslator',
+      path: '/pharma-translator',
+      component: () => import('@/views/PharmaTranslatorPage.vue')
+    },
 
     // 旧版本的知识库路由
     {

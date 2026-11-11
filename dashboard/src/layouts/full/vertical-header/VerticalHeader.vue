@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import {
+  ref,
+  computed,
+  watch,
+  onMounted,
+  onUnmounted,
+  defineAsyncComponent,
+} from "vue";
 import { useChatHeaderStore } from "@/stores/chatHeader";
 import { useCustomizerStore } from "@/stores/customizer";
 import axios from "axios";
 import Logo from "@/components/shared/Logo.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useCommonStore } from "@/stores/common";
-import { MarkdownRender, enableKatex, enableMermaid } from "markstream-vue";
 import "markstream-vue/index.css";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github.css";
@@ -15,13 +21,16 @@ import { router } from "@/router";
 import { useRoute } from "vue-router";
 import { useDisplay, useTheme } from "vuetify";
 import StyledMenu from "@/components/shared/StyledMenu.vue";
-import AboutPage from "@/views/AboutPage.vue";
 import { authApi, isLegacyFallbackError, statsApi, updatesApi } from "@/api/v1";
 import { getDesktopRuntimeInfo } from "@/utils/desktopRuntime";
-import ProviderModelMenu from "@/components/chat/ProviderModelMenu.vue";
 
-enableKatex();
-enableMermaid();
+const MarkdownRender = defineAsyncComponent(() =>
+  import("markstream-vue").then((module) => module.MarkdownRender),
+);
+const AboutPage = defineAsyncComponent(() => import("@/views/AboutPage.vue"));
+const ProviderModelMenu = defineAsyncComponent(
+  () => import("@/components/chat/ProviderModelMenu.vue"),
+);
 
 const customizer = useCustomizerStore();
 const commonStore = useCommonStore();
@@ -1062,7 +1071,6 @@ onMounted(async () => {
       @click="handleLogoClick"
     >
       <span class="logo-text Outfit">Libs · Claw</span>
-      <span class="version-text hidden-xs">老板 活都交给我干</span>
     </div>
 
     <v-btn
@@ -1163,7 +1171,7 @@ onMounted(async () => {
 
         <!-- 源代码按钮 -->
         <v-list-item
-          href="https://www.baodu.com"
+          href="https://gitee.com/Diegorivera/opc_-project.git"
           target="_blank"
           rel="noopener noreferrer"
           class="styled-menu-item"
@@ -2084,12 +2092,6 @@ onMounted(async () => {
   width: 24px;
   height: 24px;
   z-index: 1;
-}
-
-.version-text {
-  font-size: 12px;
-  color: gray;
-  margin-left: 4px;
 }
 
 .action-btn {

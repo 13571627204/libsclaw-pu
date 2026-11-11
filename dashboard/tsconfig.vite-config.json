@@ -4,6 +4,8 @@
   "compilerOptions": {
     "composite": true,
     "allowJs": true,
+    "outDir": "./node_modules/.tmp/vite-config",
+    "tsBuildInfoFile": "./node_modules/.tmp/vite-config/tsconfig.tsbuildinfo",
     "types": ["node"]
   }
 }

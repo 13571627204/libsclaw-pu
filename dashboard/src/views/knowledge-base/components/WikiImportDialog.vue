@@ -14,6 +14,11 @@ interface WikiImportEntry {
   archive: boolean;
 }
 
+interface SkippedWikiEntry {
+  path: string;
+  reason: string;
+}
+
 const props = defineProps<Props>();
 
 const emit = defineEmits<{
@@ -29,6 +34,7 @@ const overwrite = shallowRef(false);
 const importing = shallowRef(false);
 const errorMessage = shallowRef("");
 const successMessage = shallowRef("");
+const skippedEntries = shallowRef<SkippedWikiEntry[]>([]);
 const statusMessage = shallowRef("");
 const progress = shallowRef({ current: 0, total: 0 });
 let pollTimer: number | null = null;
@@ -45,6 +51,19 @@ const progressValue = computed(() => {
   if (progress.value.total <= 0) return 0;
   return Math.min(100, (progress.value.current / progress.value.total) * 100);
 });
+
+const skippedReasonLabel = (reason: string) => {
+  switch (reason) {
+    case "exists":
+      return "同路径页面已存在，保留原内容";
+    case "unsupported":
+      return "不支持的文件类型";
+    case "reserved":
+      return "系统保留页面";
+    default:
+      return "未导入";
+  }
+};
 
 const setImporting = (value: boolean) => {
   importing.value = value;
@@ -64,6 +83,7 @@ const reset = () => {
   overwrite.value = false;
   errorMessage.value = "";
   successMessage.value = "";
+  skippedEntries.value = [];
   statusMessage.value = "";
   progress.value = { current: 0, total: 0 };
   if (fileInput.value) fileInput.value.value = "";
@@ -117,6 +137,7 @@ const addEntries = (newEntries: WikiImportEntry[]) => {
   entries.value = merged;
   errorMessage.value = "";
   successMessage.value = "";
+  skippedEntries.value = [];
 };
 
 const selectFiles = (event: Event) => {
@@ -204,14 +225,31 @@ const pollTask = async (taskId: string) => {
     const task = response.data.data;
     const taskStatus = task?.status;
     if (taskStatus === "completed") {
+      skippedEntries.value = Array.isArray(task.result?.skipped)
+        ? task.result.skipped.filter(
+            (entry: unknown): entry is SkippedWikiEntry =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "path" in entry &&
+              typeof entry.path === "string" &&
+              "reason" in entry &&
+              typeof entry.reason === "string",
+          )
+        : [];
       const importedCount =
         task.result?.imported_count ??
         task.result?.success_count ??
         task.result?.page_count;
+      const skippedCount =
+        task.result?.skipped_count ?? skippedEntries.value.length;
+      const skippedSummary =
+        typeof skippedCount === "number" && skippedCount > 0
+          ? `已跳过 ${skippedCount} 个文件，详情见下方。`
+          : "";
       finishImport(
-        typeof importedCount === "number"
+        (typeof importedCount === "number"
           ? `Wiki 导入完成，共导入 ${importedCount} 个页面。`
-          : "Wiki 导入完成。",
+          : "Wiki 导入完成。") + skippedSummary,
       );
       return;
     }
@@ -244,6 +282,7 @@ const submit = async () => {
 
   errorMessage.value = "";
   successMessage.value = "";
+  skippedEntries.value = [];
   statusMessage.value = "正在提交导入任务...";
   progress.value = { current: 0, total: entries.value.length };
   setImporting(true);
@@ -385,6 +424,16 @@ onBeforeUnmount(() => {
           {{ successMessage }}
         </v-alert>
 
+        <details v-if="skippedEntries.length > 0" class="wiki-import-skipped">
+          <summary>查看跳过的文件（{{ skippedEntries.length }}）</summary>
+          <ul>
+            <li v-for="(entry, index) in skippedEntries" :key="`${entry.path}-${index}`">
+              <strong>{{ entry.path }}</strong>
+              <span>{{ skippedReasonLabel(entry.reason) }}</span>
+            </li>
+          </ul>
+        </details>
+
         <div v-if="entries.length > 0" class="selected-files">
           <div class="selected-files__header">
             <div>
@@ -445,6 +494,9 @@ onBeforeUnmount(() => {
             hide-details
             :disabled="importing"
           />
+          <p class="wiki-import-option__hint">
+            默认跳过路径相同的已有页面，保留原内容；仅勾选后才会替换。重复导入无需删除原文件。
+          </p>
         </div>
 
         <div v-if="importing" class="wiki-import-progress">
@@ -575,6 +627,36 @@ onBeforeUnmount(() => {
   border-radius: 12px;
 }
 
+.wiki-import-skipped {
+  border: 1px solid #e2edf5;
+  border-radius: 12px;
+  color: #425766;
+  font-size: 0.84rem;
+  padding: 12px 14px;
+}
+
+.wiki-import-skipped summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.wiki-import-skipped ul {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-left: 20px;
+}
+
+.wiki-import-skipped li {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.wiki-import-skipped span {
+  color: #657785;
+  display: block;
+}
+
 .selected-files {
   background: #ffffff;
   border: 1px solid #dceaf3;
@@ -679,6 +761,13 @@ onBeforeUnmount(() => {
   font-size: 0.9rem;
   font-weight: 700;
   opacity: 1;
+}
+
+.wiki-import-option__hint {
+  color: #657785;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0 8px 6px;
 }
 
 .wiki-import-progress {

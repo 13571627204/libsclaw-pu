@@ -26,9 +26,31 @@ $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $DashboardDir = Join-Path $ProjectRoot "dashboard"
+$BackendPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$FrontendRequiredFiles = @(
+    (Join-Path $DashboardDir "node_modules\.bin\vite.cmd"),
+    (Join-Path $DashboardDir "node_modules\@mdi\font\css\materialdesignicons.css"),
+    (Join-Path $DashboardDir "node_modules\@mdi\font\fonts\materialdesignicons-webfont.ttf"),
+    (Join-Path $DashboardDir "node_modules\subset-font\package.json")
+)
+
+# Keep uv's cache inside the project on Windows. This avoids failures caused by
+# an inaccessible or malformed per-user cache directory.
+if (-not $env:UV_CACHE_DIR) {
+    $env:UV_CACHE_DIR = Join-Path $ProjectRoot ".uv-cache"
+}
+if (-not $env:UV_PYTHON_INSTALL_DIR) {
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $ProjectRoot ".uv-python"
+}
 
 function Write-Dev([string]$Message, [string]$Color = "Cyan") {
     Write-Host "[dev] $Message" -ForegroundColor $Color
+}
+
+function Get-MissingFrontendDependencies {
+    return @($FrontendRequiredFiles | Where-Object {
+        -not (Test-Path -LiteralPath $_ -PathType Leaf)
+    })
 }
 
 Set-Location $ProjectRoot
@@ -50,16 +72,47 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
 
 # -- Install dependencies on the first run ($env:SKIP_INSTALL="1" skips) --
 if ($env:SKIP_INSTALL -ne "1") {
-    if (-not (Test-Path (Join-Path $ProjectRoot ".venv"))) {
-        Write-Dev "Backend dependencies are missing; running uv sync..."
+    $backendEnvReady = $false
+    if (Test-Path $BackendPython) {
+        & $BackendPython -c "import sys" 2>$null
+        $backendEnvReady = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $backendEnvReady) {
+        Write-Dev "Backend environment is missing or invalid; running uv sync..."
         uv sync
+        if ($LASTEXITCODE -ne 0) {
+            Write-Dev "uv sync failed; backend cannot be started." Red
+            exit $LASTEXITCODE
+        }
     }
-    if (-not (Test-Path (Join-Path $DashboardDir "node_modules"))) {
-        Write-Dev "Frontend dependencies are missing; running pnpm install..."
+    $missingFrontendDependencies = @(Get-MissingFrontendDependencies)
+    if ($missingFrontendDependencies.Count -gt 0) {
+        Write-Dev "Frontend dependencies are missing or incomplete; running pnpm install..."
         Push-Location $DashboardDir
-        pnpm install
-        Pop-Location
+        try {
+            pnpm install
+            $pnpmInstallExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+        if ($pnpmInstallExitCode -ne 0) {
+            Write-Dev "pnpm install failed; frontend cannot be started." Red
+            exit $pnpmInstallExitCode
+        }
     }
+}
+
+# Validate the files needed by the development command even when installation
+# was explicitly skipped. A partially populated node_modules directory is not
+# sufficient: the MDI subset step needs the package CSS and TTF at startup.
+$missingFrontendDependencies = @(Get-MissingFrontendDependencies)
+if ($missingFrontendDependencies.Count -gt 0) {
+    Write-Dev "Frontend dependencies are still incomplete. Missing files:" Red
+    foreach ($missingFile in $missingFrontendDependencies) {
+        Write-Dev "  $missingFile" Red
+    }
+    Write-Dev "Run 'pnpm install' in the dashboard directory, or unset SKIP_INSTALL." Red
+    exit 1
 }
 
 # -- Pick free backend/frontend ports. Ports are probed via Get-NetTCPConnection
@@ -100,8 +153,8 @@ $credentialPattern = '(?i)username|password'
 $errorPattern = '(?i)error|exception|traceback|critical'
 
 $backend = New-Object System.Diagnostics.Process
-$backend.StartInfo.FileName = "uv"
-$backend.StartInfo.Arguments = "run main.py"
+$backend.StartInfo.FileName = $BackendPython
+$backend.StartInfo.Arguments = "main.py"
 $backend.StartInfo.WorkingDirectory = $ProjectRoot
 $backend.StartInfo.UseShellExecute = $false
 $backend.StartInfo.RedirectStandardOutput = $true
@@ -133,9 +186,22 @@ $backend.BeginOutputReadLine()
 $backend.BeginErrorReadLine()
 
 # -- Frontend: Vite inherits the console so its output is shown as-is --
-# cmd.exe resolves pnpm.cmd from PATH (CreateProcess cannot do that on its own).
-$frontend = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "pnpm dev" `
-    -WorkingDirectory $DashboardDir -NoNewWindow -PassThru
+# Use the already installed local executables. This avoids an interactive pnpm
+# modules-store migration prompt while retaining package.json's MDI subset step.
+# Large SFCs plus frequent HMR can exhaust Node's default heap and make Vite
+# exit silently; raise the limit unless the user already configured it.
+if (-not $env:NODE_OPTIONS) {
+    $env:NODE_OPTIONS = "--max-old-space-size=8192"
+}
+$frontendCommand = "node scripts\subset-mdi-font.mjs && node_modules\.bin\vite.cmd --host"
+$frontendRestartCommand = "node_modules\.bin\vite.cmd --host"
+$FrontendRestartLimit = 10
+$frontendRestarts = 0
+function Start-Frontend([string]$Command) {
+    return Start-Process -FilePath "cmd.exe" -ArgumentList "/d", "/c", $Command `
+        -WorkingDirectory $DashboardDir -NoNewWindow -PassThru
+}
+$frontend = Start-Frontend $frontendCommand
 
 function Stop-Tree($proc) {
     if ($proc -and -not $proc.HasExited) {
@@ -151,8 +217,17 @@ try {
     Write-Dev "Press Ctrl+C to stop both."
     Write-Host ""
 
-    # Stop both servers as soon as either process exits.
-    while (-not $backend.HasExited -and -not $frontend.HasExited) {
+    # Restart Vite if it dies unexpectedly; stop both only when the backend
+    # exits or Vite keeps crashing.
+    while (-not $backend.HasExited) {
+        if ($frontend.HasExited) {
+            $frontendExitCode = $frontend.ExitCode
+            if ($frontendRestarts -ge $FrontendRestartLimit) { break }
+            $frontendRestarts++
+            Write-Dev "Frontend exited with status $frontendExitCode; restarting ($frontendRestarts/$FrontendRestartLimit)..." Yellow
+            Start-Sleep -Seconds 2
+            $frontend = Start-Frontend $frontendRestartCommand
+        }
         Start-Sleep -Milliseconds 500
     }
 
@@ -167,7 +242,7 @@ try {
         }
     } else {
         $exitStatus = 1
-        Write-Dev "Frontend exited; stopping the backend." Red
+        Write-Dev "Frontend exited $FrontendRestartLimit times (last status $($frontend.ExitCode)); stopping the backend." Red
     }
     exit $exitStatus
 } finally {

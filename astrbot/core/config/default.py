@@ -108,6 +108,9 @@ DEFAULT_CONFIG = {
         "image_caption_prompt": "Please describe the image using Chinese.",
         "gpt_image_base_url": "https://api.apiyi.com/v1",
         "gpt_image_api_key": "",
+        "content_image_base_url": "",
+        "content_image_api_key": "",
+        "content_image_model": "",
         "provider_pool": ["*"],  # "*" 表示使用所有可用的提供者
         "wake_prefix": "",
         "web_search": False,
@@ -2859,6 +2862,15 @@ CONFIG_METADATA_2 = {
                     "gpt_image_api_key": {
                         "type": "string",
                     },
+                    "content_image_base_url": {
+                        "type": "string",
+                    },
+                    "content_image_api_key": {
+                        "type": "string",
+                    },
+                    "content_image_model": {
+                        "type": "string",
+                    },
                     "wake_prefix": {
                         "type": "string",
                     },
@@ -3237,6 +3249,21 @@ CONFIG_METADATA_3 = {
                         "description": "GPT-Image-2 API Key",
                         "type": "string",
                         "hint": "填写后将启用 generate_image 工具。",
+                    },
+                    "provider_settings.content_image_base_url": {
+                        "description": "内容配图模型 Base URL（本地优先）",
+                        "type": "string",
+                        "hint": "医药批量内容配图使用的 OpenAI 兼容 /images/generations 接口，如本地 http://127.0.0.1:11434/v1；留空则使用 GPT-Image-2 配置。",
+                    },
+                    "provider_settings.content_image_api_key": {
+                        "description": "内容配图模型 API Key",
+                        "type": "string",
+                        "hint": "本地模型可留空。",
+                    },
+                    "provider_settings.content_image_model": {
+                        "description": "内容配图模型名称",
+                        "type": "string",
+                        "hint": "如 x/z-image-turbo、stable-diffusion；留空默认 gpt-image-2。",
                     },
                     "provider_stt_settings.enable": {
                         "description": "启用语音转文本",

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { logApi, pluginApi, statsApi } from "@/api/v1";
-import { fetchWithAuth } from "@/api/http";
+import { fetchWithAuth, isBackendUnavailable } from "@/api/http";
 
 export const useCommonStore = defineStore("common", {
   state: () => ({
@@ -40,7 +40,12 @@ export const useCommonStore = defineStore("common", {
       })
         .then((response) => {
           if (!response.ok) {
-            throw new Error(`SSE connection failed: ${response.status}`);
+            const error = new Error(`SSE connection failed: ${response.status}`);
+            error.backendUnavailable = isBackendUnavailable(
+              response.status,
+              response.headers,
+            );
+            throw error;
           }
           console.log("SSE stream opened");
           this.sse_connected = true;
@@ -122,9 +127,22 @@ export const useCommonStore = defineStore("common", {
             return reader.read().then(processStream);
           };
 
-          reader.read().then(processStream);
+          // 返回读取链，使流中途断开（TypeError: network error）进入下方 catch 重连
+          return reader.read().then(processStream);
         })
         .catch((error) => {
+          this.sse_connected = false;
+          if (signal.aborted) {
+            return;
+          }
+          if (error?.backendUnavailable) {
+            // Backend still booting: wait quietly and reconnect.
+            setTimeout(() => {
+              this.eventSource = null;
+              this.createEventSource();
+            }, 2000);
+            return;
+          }
           console.error("SSE error:", error);
           // Attempt to reconnect after a delay
           this.log_cache.push({
@@ -137,7 +155,7 @@ export const useCommonStore = defineStore("common", {
           setTimeout(() => {
             this.eventSource = null;
             this.createEventSource();
-          }, 1000);
+          }, 5000);
         });
 
       // Store controller to allow closing the connection

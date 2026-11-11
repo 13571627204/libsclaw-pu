@@ -64,7 +64,9 @@ def fake_image(tmp_path, monkeypatch) -> Path:
 @pytest.mark.asyncio
 async def test_convert_keeps_text_preceding_image(fake_image):
     """Text queued before an image must survive the image flush."""
-    chain = FakeMessageChain([Plain("图片说明文字"), AstrBotImage(file=str(fake_image))])
+    chain = FakeMessageChain(
+        [Plain("图片说明文字"), AstrBotImage(file=str(fake_image))]
+    )
 
     result = await LarkMessageEvent._convert_to_lark(chain, FakeLarkClient())
 

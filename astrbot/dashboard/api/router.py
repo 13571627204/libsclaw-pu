@@ -18,6 +18,7 @@ from .live_chat import router as live_chat_router
 from .logs import router as logs_router
 from .open_api import router as open_api_router
 from .personas import router as personas_router
+from .pharma_translator import router as pharma_translator_router
 from .platform import router as platform_router
 from .plugins import router as plugins_router
 from .providers import router as providers_router
@@ -57,6 +58,7 @@ def build_api_router() -> APIRouter:
     router.include_router(platform_router)
     router.include_router(t2i_router)
     router.include_router(personas_router)
+    router.include_router(pharma_translator_router)
     router.include_router(updates_router)
     router.include_router(open_api_router)
     router.include_router(live_chat_router)

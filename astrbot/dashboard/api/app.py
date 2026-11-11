@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.gzip import GZipMiddleware
 
 from astrbot.core import LogBroker
 from astrbot.core.core_lifecycle import AstrBotCoreLifecycle
@@ -33,6 +34,7 @@ from astrbot.dashboard.services.live_chat_service import LiveChatService
 from astrbot.dashboard.services.log_service import LogService
 from astrbot.dashboard.services.open_api_service import OpenApiService
 from astrbot.dashboard.services.persona_service import PersonaService
+from astrbot.dashboard.services.pharma_translator_service import PharmaTranslatorService
 from astrbot.dashboard.services.platform_service import PlatformService
 from astrbot.dashboard.services.plugin_page_service import PluginPageService
 from astrbot.dashboard.services.plugin_service import PluginService
@@ -98,6 +100,9 @@ def create_dashboard_asgi_app(
         docs_url=f"{API_V1_PREFIX}/docs",
         redoc_url=f"{API_V1_PREFIX}/redoc",
     )
+    # Compress large JS/CSS/JSON responses at a moderate level to reduce
+    # transfer time without adding excessive CPU latency on small hosts.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.state.core_lifecycle = core_lifecycle
     app.state.db = db
     app.state.jwt_secret = jwt_secret
@@ -124,6 +129,7 @@ def create_dashboard_asgi_app(
         platforms=PlatformService(core_lifecycle),
         providers=ProviderConfigService(core_lifecycle),
         personas=PersonaService(core_lifecycle),
+        pharma_translator=PharmaTranslatorService(core_lifecycle=core_lifecycle),
         plugins=PluginService(core_lifecycle, core_lifecycle.plugin_manager),
         plugin_pages=PluginPageService(
             core_lifecycle.plugin_manager,

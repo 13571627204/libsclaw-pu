@@ -1477,6 +1477,7 @@ class WikiStore(BaseVecDB):
         sources: list[tuple[Path, str | None]],
         *,
         overwrite: bool = False,
+        skip_existing: bool = False,
     ) -> dict:
         """Import Markdown files, directories, and ZIP archives as Wiki pages.
 
@@ -1489,12 +1490,15 @@ class WikiStore(BaseVecDB):
         Args:
             sources: Local paths, optionally paired with a target relative path.
             overwrite: Whether exact existing page paths may be replaced.
+            skip_existing: Skip exact existing pages when overwrite is disabled.
+                Unsafe paths and conflicts within the batch are still rejected.
 
         Returns:
             Imported page metadata, skipped source entries, and rebuild counts.
 
         Raises:
-            FileExistsError: If a target exists and overwrite is disabled.
+            FileExistsError: If a target exists and neither overwrite nor
+                skip_existing is enabled.
             ValueError: If a source, path, archive, encoding, or batch is unsafe.
         """
         candidates: list[dict] = []
@@ -1693,9 +1697,6 @@ class WikiStore(BaseVecDB):
                         f"Wiki import path conflicts by case with {existing_path}: "
                         f"{target_path}"
                     )
-                if existing_path is not None and not overwrite:
-                    raise FileExistsError(target_path)
-
                 raw_target = self.knowledge_dir.joinpath(
                     *PurePosixPath(target_path).parts
                 )
@@ -1707,6 +1708,11 @@ class WikiStore(BaseVecDB):
                             f"Wiki import target uses a symbolic link: {target_path}"
                         )
                 full_path = self._resolve_page_path(target_path)
+                if existing_path is not None and not overwrite:
+                    if skip_existing:
+                        skipped.append({"path": target_path, "reason": "exists"})
+                        continue
+                    raise FileExistsError(target_path)
                 old_content = None
                 if raw_target.is_file():
                     old_content = await asyncio.to_thread(
@@ -1748,6 +1754,16 @@ class WikiStore(BaseVecDB):
                         "size": len(prepared_content.encode("utf-8")),
                     }
                 )
+
+            if not prepared_pages:
+                return {
+                    "imported": [],
+                    "skipped": skipped,
+                    "imported_count": 0,
+                    "skipped_count": len(skipped),
+                    "paths": [],
+                    "rebuild": None,
+                }
 
             written_pages: list[dict] = []
             try:

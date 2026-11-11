@@ -103,12 +103,68 @@ function normalizeAxiosError(error: AxiosError) {
       return Promise.reject(data.message);
     }
   }
+  if (error.response?.status === 405) {
+    // 前端已更新但后端进程仍是旧版本，新接口尚未注册
+    return Promise.reject(`后端未加载该接口（${error.config?.url || ''}），请重启后端服务后重试`);
+  }
   return Promise.reject(error);
+}
+
+const BACKEND_RETRY_LIMIT = 90;
+const BACKEND_RETRY_DELAY_MS = 1000;
+
+const NETWORK_RETRY_LIMIT = 4;
+const IDEMPOTENT_METHODS = ['get', 'head', 'options'];
+
+type RetryableConfig = InternalAxiosRequestConfig & {
+  __backendRetry?: number;
+  __networkRetry?: number;
+};
+
+// The dev proxy marks "backend not reachable yet" responses; wait and retry
+// instead of surfacing them as errors while the Python backend boots.
+export function isBackendUnavailable(status: number, headers: { get?: (k: string) => unknown } | Record<string, unknown> | undefined) {
+  if (status !== 503 || !headers) return false;
+  const value =
+    typeof (headers as { get?: unknown }).get === 'function'
+      ? (headers as { get: (k: string) => unknown }).get('x-backend-unavailable')
+      : (headers as Record<string, unknown>)['x-backend-unavailable'];
+  return String(value ?? '') === '1';
 }
 
 function installAxiosInterceptors(instance: AxiosInstance) {
   instance.interceptors.request.use(attachAxiosHeaders);
-  instance.interceptors.response.use((response) => response, normalizeAxiosError);
+  instance.interceptors.response.use(
+    (response) => response,
+    async (error: AxiosError) => {
+      const config = error.config as RetryableConfig | undefined;
+      if (
+        config &&
+        error.response &&
+        isBackendUnavailable(error.response.status, error.response.headers as Record<string, unknown>) &&
+        (config.__backendRetry ?? 0) < BACKEND_RETRY_LIMIT
+      ) {
+        config.__backendRetry = (config.__backendRetry ?? 0) + 1;
+        await new Promise((resolve) => setTimeout(resolve, BACKEND_RETRY_DELAY_MS));
+        return instance.request(config);
+      }
+      // 连接被中断（后端重启、代理/网络抖动）且没有任何响应：幂等请求自动退避重试
+      if (
+        config &&
+        !error.response &&
+        error.code === 'ERR_NETWORK' &&
+        IDEMPOTENT_METHODS.includes((config.method || 'get').toLowerCase()) &&
+        (config.__networkRetry ?? 0) < NETWORK_RETRY_LIMIT
+      ) {
+        config.__networkRetry = (config.__networkRetry ?? 0) + 1;
+        await new Promise((resolve) =>
+          setTimeout(resolve, BACKEND_RETRY_DELAY_MS * 2 ** (config.__networkRetry! - 1)),
+        );
+        return instance.request(config);
+      }
+      return normalizeAxiosError(error);
+    },
+  );
 }
 
 export function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit) {

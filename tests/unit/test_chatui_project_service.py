@@ -60,9 +60,7 @@ def test_custom_workspace_rejects_file_path(tmp_path, monkeypatch):
         )
 
 
-def test_custom_workspace_relative_path_uses_astrbot_workspaces(
-    tmp_path, monkeypatch
-):
+def test_custom_workspace_relative_path_uses_astrbot_workspaces(tmp_path, monkeypatch):
     """Relative custom workspace paths should resolve under LibsClaw workspaces."""
     relative_workspace = tmp_path / "relative-workspace"
     relative_workspace.mkdir()

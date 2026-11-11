@@ -57,6 +57,11 @@ const sidebarItem: menu[] = [
     to: '/knowledge-base',
   },
   {
+    title: 'core.navigation.pharmaTranslator',
+    icon: 'mdi-pill-multiple',
+    to: '/pharma-translator',
+  },
+  {
     title: 'core.navigation.persona',
     icon: 'mdi-heart',
     to: '/persona'

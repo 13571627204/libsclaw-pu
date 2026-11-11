@@ -1,31 +1,15 @@
 /**
- * I18n TypeScript Type Definitions - Auto-generated from JSON
- * 国际化类型定义，从JSON文件自动推断，确保类型安全且自动同步
+ * I18n TypeScript definitions for lazily loaded locale bundles.
+ * 国际化类型定义，语言包在运行时按需加载。
  */
 
-// 直接导入已经组织好的翻译数据
-import { translations } from './translations';
+export const AVAILABLE_LOCALES = ['zh-CN', 'en-US', 'ru-RU'] as const;
 
-// 导出翻译数据常量，供类型推断使用
-export const translationData = translations;
+export type Locale = (typeof AVAILABLE_LOCALES)[number];
+export type TranslationSchema = Record<string, any>;
 
-// 从实际的翻译数据推断完整的翻译结构类型
-export type TranslationSchema = typeof translations[keyof typeof translations];
-
-// TypeScript 助手：递归提取嵌套键路径
-type NestedKeyOf<T> = T extends object 
-  ? {
-      [K in keyof T & string]: T[K] extends object
-        ? `${K}` | `${K}.${NestedKeyOf<T[K]>}`
-        : `${K}`
-    }[keyof T & string]
-  : never;
-
-// 自动推断的翻译键联合类型 - 包含所有有效的点分隔键路径
-export type TranslationKey = NestedKeyOf<TranslationSchema>;
-
-// 语言环境类型 - 从实际的翻译数据键推断
-export type Locale = keyof typeof translations;
+// Locale bundles are loaded lazily, so keys remain runtime strings here.
+export type TranslationKey = string;
 
 // 翻译函数类型
 export type TranslationFunction = {
@@ -126,4 +110,4 @@ declare module '@vue/runtime-core' {
 declare module 'vue-i18n' {
   export interface DefineLocaleMessage extends TranslationSchema {}
 }
-*/ 
+*/

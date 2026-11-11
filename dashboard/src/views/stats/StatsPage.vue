@@ -76,7 +76,7 @@
                 </div>
               </div>
             </div>
-            <apexchart
+            <VueApexCharts
               type="area"
               height="320"
               :options="messageChartOptions"
@@ -120,7 +120,7 @@
                 <div class="section-subtitle">{{ t('modelTrend.subtitle') }}</div>
               </div>
             </div>
-            <apexchart
+            <VueApexCharts
               type="bar"
               height="420"
               :options="providerChartOptions"
@@ -205,6 +205,7 @@
 <script setup lang="ts">
 import type { ApexOptions } from 'apexcharts'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import VueApexCharts from 'vue3-apexcharts'
 import { useTheme } from 'vuetify'
 import { statsApi } from '@/api/v1'
 import { useI18n, useModuleI18n } from '@/i18n/composables'

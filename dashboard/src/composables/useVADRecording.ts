@@ -1,5 +1,47 @@
 import { ref, onBeforeUnmount } from 'vue';
-import axios from 'axios';
+
+const ONNX_RUNTIME_URL =
+    'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js';
+const VAD_RUNTIME_URL =
+    'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js';
+
+let vadRuntimePromise: Promise<void> | null = null;
+
+function loadScript(src: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.async = true;
+        script.dataset.libsclawLazyRuntime = 'true';
+        script.addEventListener('load', () => resolve(), { once: true });
+        script.addEventListener(
+            'error',
+            () => reject(new Error(`Failed to load runtime: ${src}`)),
+            { once: true },
+        );
+        document.head.appendChild(script);
+    });
+}
+
+async function ensureVADRuntime(): Promise<void> {
+    if (window.vad) return;
+
+    if (!vadRuntimePromise) {
+        vadRuntimePromise = loadScript(ONNX_RUNTIME_URL)
+            .then(() => loadScript(VAD_RUNTIME_URL))
+            .then(() => {
+                if (!window.vad) {
+                    throw new Error('VAD runtime loaded without exposing window.vad');
+                }
+            })
+            .catch((error) => {
+                vadRuntimePromise = null;
+                throw error;
+            });
+    }
+
+    await vadRuntimePromise;
+}
 
 interface VADOptions {
     onSpeechStart?: () => void;
@@ -27,7 +69,7 @@ interface VADInstance {
 // 声明全局 vad 对象类型
 declare global {
     interface Window {
-        vad: {
+        vad?: {
             MicVAD: {
                 new(options: VADOptions): Promise<VADInstance>;
             };
@@ -52,13 +94,13 @@ export function useVADRecording() {
 
     // 初始化 VAD
     async function initVAD() {
-        if (!window.vad) {
-            console.error('VAD library not loaded. Please ensure the scripts are included in index.html');
-            return;
-        }
-
         try {
-            vadInstance.value = await (window.vad.MicVAD as any).new({
+            await ensureVADRuntime();
+            const vad = window.vad;
+            if (!vad) {
+                throw new Error('VAD runtime is unavailable');
+            }
+            vadInstance.value = await (vad.MicVAD as any).new({
                 onSpeechStart: () => {
                     console.log('[VAD] Speech started');
                     isSpeaking.value = true;

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 from collections.abc import AsyncGenerator
@@ -36,6 +37,7 @@ from .request_retry import retry_provider_request, retry_provider_request_contex
 )
 class ProviderAnthropic(Provider):
     _PROMPT_CACHE_CONTROL = {"type": "ephemeral"}
+    _EMPTY_COMPLETION_ATTEMPTS = 3
 
     @staticmethod
     def _ensure_usable_response(
@@ -131,7 +133,12 @@ class ProviderAnthropic(Provider):
         try:
             from anthropic import _base_client as anthropic_base_client
 
-            httpx_module = getattr(anthropic_base_client, "httpx", httpx)
+            # anthropic>=1.0 vendors ``httpx2``; older versions use ``httpx``
+            httpx_module = getattr(
+                anthropic_base_client,
+                "httpx2",
+                getattr(anthropic_base_client, "httpx", httpx),
+            )
         except ImportError:
             pass
         return create_proxy_client(
@@ -513,14 +520,31 @@ class ProviderAnthropic(Provider):
         self._apply_thinking_config(payloads)
         self._sanitize_assistant_messages(payloads)
 
+        async def _create_non_empty() -> Message:
+            # 上游/代理偶发返回空 content，属于瞬时故障，重试而非直接失败
+            last_completion: Message | None = None
+            for attempt in range(1, self._EMPTY_COMPLETION_ATTEMPTS + 1):
+                last_completion = await retry_provider_request(
+                    "Anthropic",
+                    lambda: self.client.messages.create(
+                        **payloads, stream=False, extra_body=extra_body
+                    ),
+                    max_attempts=request_max_retries,
+                )
+                if not isinstance(last_completion, Message) or last_completion.content:
+                    return last_completion
+                if attempt < self._EMPTY_COMPLETION_ATTEMPTS:
+                    logger.warning(
+                        "[Anthropic] Empty completion "
+                        f"(id={last_completion.id}, stop_reason={last_completion.stop_reason}); "
+                        f"retrying ({attempt + 1}/{self._EMPTY_COMPLETION_ATTEMPTS})"
+                    )
+                    await asyncio.sleep(attempt)
+            assert last_completion is not None
+            return last_completion
+
         try:
-            completion = await retry_provider_request(
-                "Anthropic",
-                lambda: self.client.messages.create(
-                    **payloads, stream=False, extra_body=extra_body
-                ),
-                max_attempts=request_max_retries,
-            )
+            completion = await _create_non_empty()
         except httpx.RequestError as e:
             proxy = self.provider_config.get("proxy", "")
             log_connection_failure("Anthropic", e, proxy)

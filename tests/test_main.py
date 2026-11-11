@@ -9,7 +9,10 @@ from unittest import mock
 
 import pytest
 
-from astrbot.core.utils.io import get_dashboard_version, should_use_bundled_dashboard_dist
+from astrbot.core.utils.io import (
+    get_dashboard_version,
+    should_use_bundled_dashboard_dist,
+)
 from main import (
     DASHBOARD_RESET_PASSWORD_ENV,
     _apply_startup_env_flags,
@@ -414,7 +417,9 @@ async def test_check_dashboard_files_replaces_stale_data_dist_with_bundled_dist(
                     result = await check_dashboard_files()
 
     assert result == str(data_dist)
-    assert (data_dist / "assets" / "version").read_text(encoding="utf-8") == f"v{VERSION}"
+    assert (data_dist / "assets" / "version").read_text(
+        encoding="utf-8"
+    ) == f"v{VERSION}"
     assert (data_dist / "index.html").read_text(encoding="utf-8") == "bundled"
     assert not (data_dist / "old.txt").exists()
     mock_download.assert_not_called()

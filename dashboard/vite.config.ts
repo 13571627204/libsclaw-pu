@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { hostname } from 'os';
 import { fileURLToPath, URL } from 'url';
 import { createLogger, defineConfig, type Logger, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
@@ -12,6 +13,7 @@ const t2iShikiRuntimePath = fileURLToPath(
 );
 const devBackendPort = Number(process.env.LIBSCLAW_DEV_BACKEND_PORT ?? 6185);
 const devFrontendPort = Number(process.env.LIBSCLAW_DEV_FRONTEND_PORT ?? 3007);
+const devHostname = hostname().toLowerCase();
 
 // The Python backend boots slower than Vite; during that window every proxied
 // API request logs an ECONNREFUSED error. Silence those, keep real errors.
@@ -124,11 +126,28 @@ export default defineConfig(({ command }) => ({
     host: '0.0.0.0',
     port: devFrontendPort,
     strictPort: true,
+    // 局域网 IP 会随网络变化；允许用本机计算机名访问（如 http://LEO:3007），地址固定不变
+    allowedHosts: [devHostname, `${devHostname}.local`],
     proxy: {
       '/api': {
         target: `http://127.0.0.1:${devBackendPort}/`,
         changeOrigin: true,
-        ws: true
+        ws: true,
+        // 配图/批量生成等长耗时请求可达十几分钟，避免代理层提前断开导致 Network Error
+        timeout: 30 * 60 * 1000,
+        proxyTimeout: 30 * 60 * 1000,
+        // Backend not up yet (booting/restarting): answer 503 with a marker
+        // header instead of Vite's default 500, so the client can retry.
+        configure: (proxy) => {
+          proxy.on('error', (_err, _req, res) => {
+            if (!('writeHead' in res) || res.headersSent || res.writableEnded) return;
+            res.writeHead(503, {
+              'Content-Type': 'application/json; charset=utf-8',
+              'X-Backend-Unavailable': '1'
+            });
+            res.end(JSON.stringify({ status: 'error', message: '后端服务启动中，请稍候' }));
+          });
+        }
       }
     }
   }

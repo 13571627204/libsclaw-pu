@@ -790,13 +790,13 @@ class SkillManager:
         if not zipfile.is_zipfile(zip_path):
             raise ValueError("Uploaded file is not a valid zip archive.")
 
-        strategy = on_conflict if on_conflict is not None else (
-            "overwrite" if overwrite else "error"
+        strategy = (
+            on_conflict
+            if on_conflict is not None
+            else ("overwrite" if overwrite else "error")
         )
         if strategy not in {"error", "skip", "overwrite"}:
-            raise ValueError(
-                "Invalid conflict strategy, must be error/skip/overwrite."
-            )
+            raise ValueError("Invalid conflict strategy, must be error/skip/overwrite.")
 
         installed_skills = []
         skipped_skills = []
@@ -895,9 +895,7 @@ class SkillManager:
                         skipped_skills.append(skill_name)
                     else:
                         if dest_dir.exists() and strategy == "error":
-                            raise FileExistsError(
-                                f"Skill {skill_name} already exists."
-                            )
+                            raise FileExistsError(f"Skill {skill_name} already exists.")
                         if dest_dir.exists():
                             shutil.rmtree(dest_dir)
 

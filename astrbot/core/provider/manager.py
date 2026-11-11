@@ -28,6 +28,10 @@ class HasInitialize(Protocol):
     async def initialize(self) -> None: ...
 
 
+class ProviderConfigurationError(ValueError):
+    """An incomplete model configuration that can be repaired in the dashboard."""
+
+
 class ProviderManager:
     def __init__(
         self,
@@ -279,6 +283,8 @@ class ProviderManager:
         for provider_config in self.providers_config:
             try:
                 await self.load_provider(provider_config)
+            except ProviderConfigurationError as e:
+                logger.warning("模型配置无效，已跳过：%s", e)
             except Exception as e:
                 logger.error(traceback.format_exc())
                 logger.error(e)
@@ -526,10 +532,44 @@ class ProviderManager:
             if provider_source:
                 # 合并配置，provider 的配置优先级更高
                 merged_config = {**provider_source, **pc}
+                # 空类型是旧版表单的占位值，应继续继承来源的类型。
+                for field in ("type", "provider_type"):
+                    if pc.get(field) is None or (
+                        isinstance(pc.get(field), str) and not pc[field].strip()
+                    ):
+                        merged_config[field] = provider_source.get(field)
                 # 保持 id 为 provider 的 id，而不是 source 的 id
-                merged_config["id"] = pc["id"]
+                merged_config["id"] = pc.get("id")
                 pc = merged_config
         return pc
+
+    def _validated_provider_config(self, provider_config: dict) -> dict:
+        """Resolve inheritance and reject incomplete enabled models before use/save."""
+        if not isinstance(provider_config, dict):
+            raise ProviderConfigurationError("模型配置必须是对象")
+        provider_id = provider_config.get("id")
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            raise ProviderConfigurationError("模型配置缺少有效的 id")
+        merged = self.get_merged_provider_config(provider_config)
+        merged.setdefault("enable", True)
+        if not merged["enable"] or merged.get("provider_type") == "agent_runner":
+            return merged
+
+        source_id = provider_config.get("provider_source_id")
+        if source_id and not any(
+            source.get("id") == source_id for source in self.provider_sources_config
+        ):
+            raise ProviderConfigurationError(
+                f"模型 {provider_id} 引用的提供商来源 {source_id} 不存在；"
+                "请在模型配置中重新选择有效来源，或禁用该模型"
+            )
+        adapter_type = merged.get("type")
+        if not isinstance(adapter_type, str) or not adapter_type.strip():
+            raise ProviderConfigurationError(
+                f"模型 {provider_id} 缺少提供商适配器类型 type；"
+                "请为模型或其提供商来源设置有效类型"
+            )
+        return merged
 
     def get_provider_config_by_id(
         self,
@@ -580,7 +620,7 @@ class ProviderManager:
 
     async def load_provider(self, provider_config: dict) -> None:
         # 如果 provider_source_id 存在且不为空，则从 provider_sources 中找到对应的配置并合并
-        provider_config = self.get_merged_provider_config(provider_config)
+        provider_config = self._validated_provider_config(provider_config)
 
         if provider_config.get("provider_type", "") == "chat_completion":
             provider_config = self._resolve_env_key_list(provider_config)
@@ -739,8 +779,10 @@ class ProviderManager:
 
     async def reload(self, provider_config: dict) -> None:
         async with self.reload_lock:
+            # Validate before terminating an already working instance.
+            validated_config = self._validated_provider_config(provider_config)
             await self.terminate_provider(provider_config["id"])
-            if provider_config["enable"]:
+            if validated_config["enable"]:
                 await self.load_provider(provider_config)
 
             # 和配置文件保持同步
@@ -852,6 +894,7 @@ class ProviderManager:
                     and provider.get("id", None) != origin_provider_id
                 ):
                     raise ValueError(f"Provider ID {npid} already exists")
+            self._validated_provider_config(new_config)
             # update config
             for idx, provider in enumerate(config["provider"]):
                 if provider.get("id", None) == origin_provider_id:
@@ -873,6 +916,7 @@ class ProviderManager:
             for provider in config["provider"]:
                 if provider.get("id", None) == npid:
                     raise ValueError(f"Provider ID {npid} already exists")
+            self._validated_provider_config(new_config)
             # add to config
             config["provider"].append(new_config)
             config.save_config()

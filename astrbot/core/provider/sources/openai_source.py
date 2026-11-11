@@ -348,7 +348,12 @@ class ProviderOpenAIOfficial(Provider):
         try:
             from openai import _base_client as openai_base_client
 
-            httpx_module = getattr(openai_base_client, "httpx", httpx)
+            # newer openai SDKs vendor ``httpx2``; older versions use ``httpx``
+            httpx_module = getattr(
+                openai_base_client,
+                "httpx2",
+                getattr(openai_base_client, "httpx", httpx),
+            )
         except ImportError:
             pass
         return create_proxy_client("OpenAI", proxy, httpx_module=httpx_module)

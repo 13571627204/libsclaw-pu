@@ -37,6 +37,33 @@ def _get_status_code(error: BaseException) -> int | None:
     return None
 
 
+_NON_RETRYABLE_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "exceeded_current_quota",
+    "insufficient balance",
+    "insufficient_balance",
+    "billing_hard_limit",
+    "account is suspended",
+    "is suspended",
+    "arrearage",
+    "余额不足",
+    "欠费",
+)
+
+
+def _is_quota_exhausted_error(error: BaseException) -> bool:
+    """429 caused by billing/quota exhaustion will not recover by retrying."""
+    parts = [str(error)]
+    body = getattr(error, "body", None)
+    if body is not None:
+        parts.append(str(body))
+    code = getattr(error, "code", None)
+    if isinstance(code, str):
+        parts.append(code)
+    text = " ".join(parts).lower()
+    return any(marker in text for marker in _NON_RETRYABLE_QUOTA_MARKERS)
+
+
 def _is_retryable_provider_request_error(
     error: BaseException,
     *,
@@ -53,8 +80,9 @@ def _is_retryable_provider_request_error(
     if status_code is None:
         return False
 
-    if status_code == 429 and not retry_rate_limits:
-        return False
+    if status_code == 429:
+        if not retry_rate_limits or _is_quota_exhausted_error(error):
+            return False
 
     return status_code in REQUEST_RETRY_STATUS_CODES or 500 <= status_code <= 599
 

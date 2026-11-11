@@ -377,8 +377,7 @@ class SkillsService:
                     skipped.append(
                         {
                             "filename": filename,
-                            "name": ", ".join(existing_names)
-                            or Path(filename).stem,
+                            "name": ", ".join(existing_names) or Path(filename).stem,
                             "names": existing_names,
                             "error": "Skill already exists.",
                         }

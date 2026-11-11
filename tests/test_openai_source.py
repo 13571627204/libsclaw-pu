@@ -84,7 +84,10 @@ def test_create_http_client_uses_openai_httpx_module(monkeypatch):
 
     from openai import _base_client as openai_base_client
 
-    assert captured["httpx_module"] is openai_base_client.httpx
+    expected_module = getattr(
+        openai_base_client, "httpx2", getattr(openai_base_client, "httpx", None)
+    )
+    assert captured["httpx_module"] is expected_module
 
 
 def test_create_http_client_falls_back_to_global_httpx_module(monkeypatch):

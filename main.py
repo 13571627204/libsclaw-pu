@@ -1,9 +1,11 @@
 import argparse
 import asyncio
+import faulthandler
 import mimetypes
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import runtime_bootstrap
@@ -227,5 +229,41 @@ if __name__ == "__main__":
     log_broker = LogBroker()
     LogManager.set_queue_handler(logger, log_broker)
 
-    # 只使用一次 asyncio.run()
-    asyncio.run(main_async(args.webui_dir))
+    # 原生崩溃（如 Windows 栈溢出 0xC00000FD）不会产生 Python traceback，
+    # 用 faulthandler 把所有线程的调用栈写入文件，便于事后定位。
+    crash_log_dir = Path(get_astrbot_data_path()) / "logs"
+    crash_log_dir.mkdir(parents=True, exist_ok=True)
+    crash_log = open(crash_log_dir / "fatal_crash.log", "a", encoding="utf-8")  # noqa: SIM115
+    faulthandler.enable(file=crash_log, all_threads=True)
+
+    # Windows 主线程栈只有约 2MB，模型响应解析、JSON/正则等原生深递归可能直接栈溢出
+    # 杀死整个进程；在大栈线程中运行事件循环（只预留虚拟内存，不实际占用）。
+    threading.stack_size(128 * 1024 * 1024)
+    state: dict = {}
+
+    async def _entry() -> None:
+        state["loop"] = asyncio.get_running_loop()
+        state["task"] = asyncio.current_task()
+        await main_async(args.webui_dir)
+
+    def _runner() -> None:
+        try:
+            # 只使用一次 asyncio.run()
+            asyncio.run(_entry())
+        except BaseException as exc:  # noqa: BLE001
+            state["exc"] = exc
+
+    loop_thread = threading.Thread(target=_runner, name="libsclaw-main-loop")
+    loop_thread.start()
+    threading.stack_size(0)
+    try:
+        while loop_thread.is_alive():
+            loop_thread.join(0.5)
+    except KeyboardInterrupt:
+        if state.get("loop") and state.get("task"):
+            state["loop"].call_soon_threadsafe(state["task"].cancel)
+        loop_thread.join(10)
+        sys.exit(130)
+    exc = state.get("exc")
+    if exc is not None and not isinstance(exc, asyncio.CancelledError):
+        raise exc

@@ -112,13 +112,13 @@ async def _require_api_key_scope(
     raw_key: str,
     scope: str,
 ) -> AuthContext:
-    if scope not in ALL_OPEN_API_SCOPES:
-        raise ApiError("Insufficient API key scope", status_code=403)
-
+    # 先校验 key 本身：无效凭证必须返回 401，前端才会清理过期 token 并跳转登录
     key_hash = ApiKeyService.hash_key(raw_key)
     api_key = await request.app.state.db.get_active_api_key_by_hash(key_hash)
     if not api_key:
         raise ApiError("Invalid API key", status_code=401)
+    if scope not in ALL_OPEN_API_SCOPES:
+        raise ApiError("Insufficient API key scope", status_code=403)
     scopes = (
         [str(scope) for scope in api_key.scopes]
         if isinstance(api_key.scopes, list)

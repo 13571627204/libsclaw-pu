@@ -738,6 +738,84 @@ async def test_import_sources_conflict_preflight_writes_nothing(
 
 
 @pytest.mark.asyncio
+async def test_import_sources_skip_existing_preserves_page_and_index(
+    wiki_store, tmp_path, monkeypatch
+):
+    target = "中睿26年医健产业蓝皮书.md"
+    original = await wiki_store.write_page(target, "# Bluebook\n\noriginal marker")
+    original_bytes = (wiki_store.knowledge_dir / target).read_bytes()
+    source = tmp_path / "replacement.md"
+    source.write_text("# Replacement\n\nnew marker", encoding="utf-8")
+    rebuild = AsyncMock(side_effect=AssertionError("No rebuild for skipped pages"))
+    monkeypatch.setattr(wiki_store, "_rebuild_index_locked", rebuild)
+
+    for _ in range(2):
+        result = await wiki_store.import_sources([(source, target)], skip_existing=True)
+        assert result["imported_count"] == 0
+        assert result["skipped_count"] == 1
+        assert result["skipped"] == [{"path": target, "reason": "exists"}]
+        assert result["paths"] == []
+        assert result["rebuild"] is None
+
+    assert (wiki_store.knowledge_dir / target).read_bytes() == original_bytes
+    assert (await wiki_store.get_page_metadata(target))["doc_id"] == original["doc_id"]
+    rebuild.assert_not_awaited()
+    assert await wiki_store.search_sparse(["original marker"], limit=10)
+
+
+@pytest.mark.asyncio
+async def test_import_sources_skip_existing_imports_new_pages_in_same_batch(
+    wiki_store, tmp_path, monkeypatch
+):
+    await wiki_store.write_page("existing.md", "# Existing\n\noriginal marker")
+    old_bytes = (wiki_store.knowledge_dir / "existing.md").read_bytes()
+    source = tmp_path / "source.md"
+    source.write_text("# New\n\nnew marker", encoding="utf-8")
+    rebuild = AsyncMock(wraps=wiki_store._rebuild_index_locked)
+    monkeypatch.setattr(wiki_store, "_rebuild_index_locked", rebuild)
+
+    result = await wiki_store.import_sources(
+        [(source, "existing.md"), (source, "new.md")], skip_existing=True
+    )
+
+    assert result["paths"] == ["new.md"]
+    assert result["imported_count"] == 1
+    assert result["skipped"] == [{"path": "existing.md", "reason": "exists"}]
+    assert result["skipped_count"] == 1
+    assert (wiki_store.knowledge_dir / "existing.md").read_bytes() == old_bytes
+    rebuild.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_import_sources_skip_existing_serializes_concurrent_retries(
+    wiki_store, tmp_path
+):
+    source = tmp_path / "concurrent.md"
+    source.write_text("# Concurrent\n\nretry marker", encoding="utf-8")
+    results = await asyncio.gather(
+        wiki_store.import_sources([source], skip_existing=True),
+        wiki_store.import_sources([source], skip_existing=True),
+    )
+    assert sorted(result["imported_count"] for result in results) == [0, 1]
+    assert sorted(result["skipped_count"] for result in results) == [0, 1]
+    assert (await wiki_store.read_page("concurrent.md"))["content"].count(
+        "retry marker"
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_import_sources_skip_existing_still_rejects_case_conflicts(
+    wiki_store, tmp_path
+):
+    await wiki_store.write_page("existing.md", "# Existing")
+    source = tmp_path / "replacement.md"
+    source.write_text("# Replacement", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="conflicts by case"):
+        await wiki_store.import_sources([(source, "Existing.md")], skip_existing=True)
+
+
+@pytest.mark.asyncio
 async def test_import_sources_rebuild_failure_restores_all_files_and_old_index(
     wiki_store,
     tmp_path,
@@ -769,7 +847,10 @@ async def test_import_sources_rebuild_failure_restores_all_files_and_old_index(
 
 
 @pytest.mark.asyncio
-async def test_import_sources_overwrite_preserves_document_id(wiki_store, tmp_path):
+@pytest.mark.parametrize("skip_existing", [False, True])
+async def test_import_sources_overwrite_preserves_document_id(
+    wiki_store, tmp_path, skip_existing
+):
     original = await wiki_store.write_page(
         "topics/overwrite.md",
         "# Original\n\nold content",
@@ -780,6 +861,7 @@ async def test_import_sources_overwrite_preserves_document_id(wiki_store, tmp_pa
     result = await wiki_store.import_sources(
         [(source, "topics/overwrite.markdown")],
         overwrite=True,
+        skip_existing=skip_existing,
     )
 
     imported = result["imported"][0]
@@ -1286,6 +1368,33 @@ async def test_kb_helper_import_wiki_sources_syncs_document_metadata(
         vec_db=wiki_store,
     )
     helper.refresh_kb.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kb_helper_import_wiki_sources_skipped_pages_do_not_change_metadata(
+    wiki_store, kb_helper_class, tmp_path
+):
+    await wiki_store.write_page("existing.md", "# Existing\n\noriginal marker")
+    source = tmp_path / "replacement.md"
+    source.write_text("# Replacement", encoding="utf-8")
+    helper = kb_helper_class.__new__(kb_helper_class)
+    helper.kb_db = MagicMock()
+    helper.kb_db.get_document_by_id = AsyncMock()
+    helper.kb_db.update_kb_stats = AsyncMock()
+    helper._ensure_vec_db = AsyncMock(return_value=wiki_store)
+    helper.refresh_kb = AsyncMock()
+
+    result = await helper.import_wiki_sources(
+        [(source, "existing.md")], skip_existing=True
+    )
+
+    assert result["documents"] == []
+    assert result["imported_count"] == 0
+    assert result["skipped"] == [{"path": "existing.md", "reason": "exists"}]
+    helper.kb_db.get_document_by_id.assert_not_awaited()
+    helper.kb_db.get_db.assert_not_called()
+    helper.kb_db.update_kb_stats.assert_not_awaited()
+    helper.refresh_kb.assert_not_awaited()
 
 
 @pytest.mark.asyncio

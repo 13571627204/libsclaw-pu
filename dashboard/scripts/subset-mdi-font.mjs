@@ -166,20 +166,25 @@ function buildFallbackCss() {
 
 // ── Fallback: copy original full MDI font if subsetting fails ───────────────
 function fallbackToFullFont(reason) {
+    const requiredFallbackFiles = [MDI_CSS_PATH, MDI_WOFF2_PATH, MDI_WOFF_PATH];
+    const missingFallbackFiles = requiredFallbackFiles.filter(path => !existsSync(path));
+    if (missingFallbackFiles.length > 0) {
+        throw new Error(
+            `Full-font fallback is unavailable because @mdi/font is incomplete. ` +
+            `Missing: ${missingFallbackFiles.join(", ")}. Run 'pnpm install' first.`
+        );
+    }
+
     console.warn(`\n⚠️  Subsetting failed: ${reason}`);
     console.warn(`⚠️  Falling back to full @mdi/font (build will not break)\n`);
 
     // Copy original font files
-    if (existsSync(MDI_WOFF2_PATH)) {
-        copyFileSync(MDI_WOFF2_PATH, join(OUT_DIR, "materialdesignicons-webfont-subset.woff2"));
-    }
-    if (existsSync(MDI_WOFF_PATH)) {
-        copyFileSync(MDI_WOFF_PATH, join(OUT_DIR, "materialdesignicons-webfont-subset.woff"));
-    }
+    copyFileSync(MDI_WOFF2_PATH, join(OUT_DIR, "materialdesignicons-webfont-subset.woff2"));
+    copyFileSync(MDI_WOFF_PATH, join(OUT_DIR, "materialdesignicons-webfont-subset.woff"));
 
     writeFileSync(join(OUT_DIR, "materialdesignicons-subset.css"), buildFallbackCss());
 
-    const size = existsSync(MDI_WOFF2_PATH) ? statSync(MDI_WOFF2_PATH).size : 0;
+    const size = statSync(MDI_WOFF2_PATH).size;
     console.warn(`⚠️  Fallback complete: using full font (${(size / 1024).toFixed(1)} KB woff2)`);
 }
 

@@ -302,16 +302,57 @@ class KBHelper:
             return wiki_store
 
     async def delete_vec_db(self) -> None:
-        """删除知识库的向量数据库和所有相关文件"""
+        """删除知识库的向量数据库和所有相关文件。
+
+        Windows 上 SQLite/索引文件的句柄释放可能存在短暂延迟，
+        或被仍在运行的任务/实例占用（WinError 32），因此对目录删除做
+        有限重试；最终仍被占用时抛出可读错误，由上层决定重试，
+        知识库元数据记录保持不变，不会产生半删除状态。
+        """
         import shutil
 
         await self.terminate()
-        if self.kb_dir.exists():
-            shutil.rmtree(self.kb_dir)
+        if not self.kb_dir.exists():
+            return
+        last_exc: PermissionError | None = None
+        for attempt in range(5):
+            try:
+                await asyncio.to_thread(shutil.rmtree, self.kb_dir)
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                await asyncio.sleep(0.4 * (attempt + 1))
+        raise ValueError(
+            "知识库文件正被占用，无法删除。请确认没有其他正在运行的实例，"
+            "且没有正在执行的上传/导入/检索任务，稍后重试。"
+        ) from last_exc
 
     async def terminate(self) -> None:
-        if hasattr(self, "vec_db") and self.vec_db:
-            await self.vec_db.close()
+        stores: list = []
+        for attr in ("vec_db", "wiki_store"):
+            store = getattr(self, attr, None)
+            if (
+                store is not None
+                and hasattr(store, "close")
+                and all(store is not item for item in stores)
+            ):
+                stores.append(store)
+        for store in stores:
+            last_exc: Exception | None = None
+            for _ in range(3):
+                try:
+                    await store.close()
+                    break
+                except Exception as exc:  # aiosqlite 关闭偶发失败时重试
+                    last_exc = exc
+                    await asyncio.sleep(0.2)
+            else:
+                logger.warning(
+                    f"关闭知识库 {self.kb.kb_name}({self.kb.kb_id}) 的索引连接失败: "
+                    f"{last_exc}"
+                )
 
     async def upload_document(
         self,
@@ -607,6 +648,7 @@ class KBHelper:
         sources: list[tuple[Path, str | None]],
         *,
         overwrite: bool = False,
+        skip_existing: bool = False,
     ) -> dict:
         """Import a batch of Markdown sources and synchronize document metadata.
 
@@ -614,6 +656,7 @@ class KBHelper:
             sources: Local files, directories, or ZIP archives, optionally paired
                 with a Wiki-relative target path or directory prefix.
             overwrite: Whether exact existing Wiki page paths may be replaced.
+            skip_existing: Skip existing pages when overwrite is disabled.
 
         Returns:
             Wiki import results plus synchronized document metadata.
@@ -623,7 +666,9 @@ class KBHelper:
                 different knowledge base.
         """
         wiki_store = await self._ensure_vec_db()
-        result = await wiki_store.import_sources(sources, overwrite=overwrite)
+        result = await wiki_store.import_sources(
+            sources, overwrite=overwrite, skip_existing=skip_existing
+        )
         if not result["imported"]:
             result["documents"] = []
             return result
