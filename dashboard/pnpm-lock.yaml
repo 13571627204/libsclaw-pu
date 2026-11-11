@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  immutable: 4.3.8
+  lodash-es: 4.17.23
+
 importers:
 
   .:
