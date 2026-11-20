@@ -197,7 +197,9 @@ class StatService:
 
     async def get_stat(self, offset_sec: int) -> dict:
         try:
-            stat = self.db_helper.get_base_stats(offset_sec)
+            stat = await self.db_helper.get_base_stats_async(offset_sec)
+            if stat is None:
+                raise StatServiceError("获取统计数据失败，请稍后重试。")
             now = int(time.time())
             start_time = now - offset_sec
             message_time_based_stats = []
@@ -215,7 +217,9 @@ class StatService:
 
             stat_dict = stat.__dict__
 
-            cpu_percent = psutil.cpu_percent(interval=0.5)
+            # 非阻塞瞬时采样（返回自上次调用以来的 CPU 使用率）；
+            # interval=0.5 会固定阻塞 0.5s，无法满足接口响应时间目标。
+            cpu_percent = psutil.cpu_percent(interval=None)
             thread_count = threading.active_count()
 
             plugins = self.core_lifecycle.star_context.get_all_stars()
@@ -232,12 +236,14 @@ class StatService:
                 int(time.time()) - self.core_lifecycle.start_time,
             )
 
+            grouped_stats = await self.db_helper.get_grouped_base_stats_async(
+                offset_sec,
+            )
+            total_message_count = await self.db_helper.get_total_message_count_async()
             stat_dict.update(
                 {
-                    "platform": self.db_helper.get_grouped_base_stats(
-                        offset_sec,
-                    ).platform,
-                    "message_count": self.db_helper.get_total_message_count() or 0,
+                    "platform": grouped_stats.platform,
+                    "message_count": total_message_count or 0,
                     "platform_count": len(
                         self.core_lifecycle.platform_manager.get_insts(),
                     ),

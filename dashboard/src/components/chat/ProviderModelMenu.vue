@@ -190,15 +190,22 @@ const selectedProvider = computed(() =>
 );
 
 const triggerTitle = computed(() => {
+  // 优先显示模型名称（如 kimi-k2.6），无模型名时回退到提供商 id
+  const model = String(selectedProvider.value?.model || "").trim();
+  if (model) return model;
   if (selectedProvider.value?.id) return selectedProvider.value.id;
+  if (selectedModelName.value) return selectedModelName.value;
   if (selectedProviderId.value) return selectedProviderId.value;
   return props.variant === "header" ? "默认模型" : "模型";
 });
 
 const triggerMeta = computed(() => {
-  const model = selectedProvider.value?.model || selectedModelName.value;
-  if (!model || model === triggerTitle.value) return "";
-  return model;
+  // 标题已是模型名时，副标题补充提供商 id（如 kimweixin/kimi-k2.6）
+  const id = String(selectedProvider.value?.id || "").trim();
+  if (id && id !== triggerTitle.value) return id;
+  const model = selectedModelName.value;
+  if (model && model !== triggerTitle.value) return model;
+  return "";
 });
 
 const filteredProviders = computed(() => {

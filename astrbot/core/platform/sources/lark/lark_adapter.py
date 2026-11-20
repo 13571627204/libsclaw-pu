@@ -13,6 +13,7 @@ from lark_oapi.api.im.v1 import (
     GetMessageResourceRequest,
 )
 from lark_oapi.api.im.v1.processor import P2ImMessageReceiveV1Processor
+from lark_oapi.ws.exception import ClientException
 
 import astrbot.api.message_components as Comp
 from astrbot import logger
@@ -88,6 +89,7 @@ class LarkPlatformAdapter(Platform):
             .build()
         )
 
+        self._ping_task: asyncio.Task | None = None
         self.webhook_server = None
         if self.connection_mode == "webhook":
             self.webhook_server = LarkWebhookServer(platform_config, event_queue)
@@ -674,7 +676,17 @@ class LarkPlatformAdapter(Platform):
                 logger.warning("[Lark] Webhook 模式已启用，但未配置 webhook_uuid")
         else:
             # 长连接模式
-            await self.client._connect()
+            try:
+                await self.client._connect()
+            except ClientException:
+                raise
+            except Exception as e:
+                # 启动时网络异常（如 DNS 解析失败），交由 SDK 自动重连
+                logger.error(f"[Lark] 长连接建立失败，将自动重连: {e}")
+                await self.client._disconnect()
+                await self.client._reconnect()
+            # 启动应用层心跳，否则服务端会周期性断开连接
+            self._ping_task = asyncio.create_task(self.client._ping_loop())
 
     async def webhook_callback(self, request: Any) -> Any:
         """统一 Webhook 回调入口"""
@@ -696,6 +708,9 @@ class LarkPlatformAdapter(Platform):
 
     async def terminate(self) -> None:
         if self.connection_mode == "socket":
+            if self._ping_task is not None:
+                self._ping_task.cancel()
+                self._ping_task = None
             await self.client._disconnect()
         logger.info("飞书(Lark) 适配器已关闭")
 

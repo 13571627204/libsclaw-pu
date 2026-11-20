@@ -257,10 +257,13 @@ class AuthService:
         if not isinstance(req_username, str) or not isinstance(req_password, str):
             return self.error("Invalid request payload")
 
-        login_verified = req_username == username and verify_dashboard_password(
+        # PBKDF2 为 CPU 密集型计算（60 万次迭代），放到线程池避免阻塞事件循环
+        password_verified = await asyncio.to_thread(
+            verify_dashboard_password,
             password,
             req_password,
         )
+        login_verified = req_username == username and password_verified
 
         if not login_verified:
             await asyncio.sleep(3)
@@ -353,7 +356,8 @@ class AuthService:
         if not isinstance(req_password, str):
             return self.error("Invalid request payload")
 
-        if not verify_dashboard_password(password, req_password):
+        # PBKDF2 为 CPU 密集型计算，放到线程池避免阻塞事件循环
+        if not await asyncio.to_thread(verify_dashboard_password, password, req_password):
             return self.error("原密码错误")
 
         new_pwd = post_data.get("new_password", None)

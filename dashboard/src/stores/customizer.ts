@@ -41,9 +41,11 @@ export const useCustomizerStore = defineStore('customizer', {
     },
 
     SET_THEME_MODE(mode: ThemeMode) {
-      this.themeMode = mode;
-      localStorage.setItem('themeMode', mode);
-      const uiTheme = resolveUiTheme(mode);
+      // 暗色已禁用：dark 一律按亮色处理
+      const normalized: ThemeMode = mode === 'dark' ? 'light' : mode;
+      this.themeMode = normalized;
+      localStorage.setItem('themeMode', normalized);
+      const uiTheme = resolveUiTheme(normalized);
       this.uiTheme = uiTheme;
       localStorage.setItem('uiTheme', uiTheme);
     },

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from astrbot.dashboard.responses import ApiError, ok
 from astrbot.dashboard.services import pharma_competitor
 from astrbot.dashboard.services.pharma_translator_service import (
+    MAX_LITERATURE_DOC_BYTES,
     MAX_PDF_BYTES,
     PharmaTranslatorError,
     PharmaTranslatorService,
@@ -144,13 +145,15 @@ def _translate_error(exc: PharmaTranslatorError) -> ApiError:
     return ApiError(str(exc), status_code=exc.status_code)
 
 
-async def _read_limited(file: UploadFile) -> bytes:
+async def _read_limited(file: UploadFile, max_bytes: int = MAX_PDF_BYTES) -> bytes:
     chunks: list[bytes] = []
     size = 0
     while chunk := await file.read(1024 * 1024):
         size += len(chunk)
-        if size > MAX_PDF_BYTES:
-            raise ApiError("上传文件超过 100 MB", status_code=413)
+        if size > max_bytes:
+            raise ApiError(
+                f"上传文件超过 {max_bytes // (1024 * 1024)} MB", status_code=413
+            )
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -184,7 +187,7 @@ async def list_projects(
     auth: AuthContext = Depends(require_pharma_scope),
     service: PharmaTranslatorService = Depends(get_service),
 ):
-    return ok(service.list_projects(auth.username))
+    return ok(await asyncio.to_thread(service.list_projects, auth.username))
 
 
 @router.get("/projects/{project_id}")
@@ -194,7 +197,9 @@ async def get_project(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.get_project(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(service.get_project, auth.username, project_id)
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
@@ -206,12 +211,13 @@ async def delete_project(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        service.delete_project(auth.username, project_id)
+        await asyncio.to_thread(service.delete_project, auth.username, project_id)
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return ok({"project_id": project_id})
 
 
+# 废弃接口：前端已改用 /workflow/actions 统一驱动流程，仅为兼容旧客户端保留，新功能请勿对接
 @router.post("/projects/{project_id}/confirm")
 async def confirm_project(
     project_id: str,
@@ -220,7 +226,8 @@ async def confirm_project(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.confirm_project(
+        result = await asyncio.to_thread(
+            service.confirm_project,
             username=auth.username,
             project_id=project_id,
             fields=payload.fields,
@@ -240,7 +247,9 @@ async def apply_workflow_action(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.workflow_action(
+        # 场景/内容生成、合规扫描为同步 CPU 重活，放线程池避免卡死事件循环
+        result = await asyncio.to_thread(
+            service.workflow_action,
             username=auth.username,
             project_id=project_id,
             action=request_payload.action,
@@ -285,17 +294,27 @@ async def upload_literature(
     auth: AuthContext = Depends(require_pharma_scope),
     service: PharmaTranslatorService = Depends(get_service),
 ):
-    if len(files) > 5:
-        raise ApiError("单次最多上传 5 份文献", status_code=422)
+    if len(files) > 10:
+        raise ApiError("单次最多上传 10 份文献", status_code=422)
     payloads: list[tuple[str, bytes]] = []
+    failures: list[dict[str, str]] = []
     for file in files:
-        payloads.append((file.filename or "document", await _read_limited(file)))
+        filename = file.filename or "document"
+        try:
+            payloads.append(
+                (filename, await _read_limited(file, MAX_LITERATURE_DOC_BYTES))
+            )
+        except ApiError as exc:
+            failures.append({"filename": filename, "reason": str(exc.message)})
+        finally:
+            await file.close()
     try:
         result = await service.add_literature(
             username=auth.username,
             project_id=project_id,
             files=payloads,
             doc_kind=doc_kind,
+            failures=failures,
         )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
@@ -310,8 +329,11 @@ async def delete_literature(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.remove_literature(
-            username=auth.username, project_id=project_id, doc_id=doc_id
+        result = await asyncio.to_thread(
+            service.remove_literature,
+            username=auth.username,
+            project_id=project_id,
+            doc_id=doc_id,
         )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
@@ -347,8 +369,8 @@ async def export_literature_triple_table(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        filename, content = service.export_literature_triple_csv(
-            auth.username, project_id
+        filename, content = await asyncio.to_thread(
+            service.export_literature_triple_csv, auth.username, project_id
         )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
@@ -368,11 +390,16 @@ async def list_literature_redlines(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.list_literature_redlines(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(
+                service.list_literature_redlines, auth.username, project_id
+            )
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
 
+# 废弃接口：前端已不调用（SKU 复用状态统一走 /sku-reuse），仅测试覆盖，保留以兼容旧客户端
 @router.get("/projects/{project_id}/literature/archive")
 async def get_literature_archive(
     project_id: str,
@@ -380,11 +407,16 @@ async def get_literature_archive(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.get_literature_sku_archive(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(
+                service.get_literature_sku_archive, auth.username, project_id
+            )
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
 
+# 废弃接口：前端已不调用，仅测试覆盖，保留以兼容旧客户端
 @router.post("/projects/{project_id}/literature/archive/reuse")
 async def reuse_literature_archive(
     project_id: str,
@@ -392,11 +424,16 @@ async def reuse_literature_archive(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.reuse_literature_archive(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(
+                service.reuse_literature_archive, auth.username, project_id
+            )
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
 
+# 废弃接口：用户声音导入入口已从界面移除，前端不再调用
 @router.post("/projects/{project_id}/user-voices")
 async def add_user_voices(
     project_id: str,
@@ -405,14 +442,18 @@ async def add_user_voices(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.add_user_voices(
-            username=auth.username, project_id=project_id, voices=payload.voices
+        result = await asyncio.to_thread(
+            service.add_user_voices,
+            username=auth.username,
+            project_id=project_id,
+            voices=payload.voices,
         )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return ok(result)
 
 
+# 废弃接口：用户声音删除入口已从界面移除，前端不再调用
 @router.delete("/projects/{project_id}/user-voices/{voice_id}")
 async def remove_user_voice(
     project_id: str,
@@ -421,8 +462,11 @@ async def remove_user_voice(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.remove_user_voice(
-            username=auth.username, project_id=project_id, voice_id=voice_id
+        result = await asyncio.to_thread(
+            service.remove_user_voice,
+            username=auth.username,
+            project_id=project_id,
+            voice_id=voice_id,
         )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
@@ -533,7 +577,9 @@ async def rework_status(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.rework_status(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(service.rework_status, auth.username, project_id)
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
@@ -557,7 +603,9 @@ async def auto_fix_status(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        return ok(service.auto_fix_status(auth.username, project_id))
+        return ok(
+            await asyncio.to_thread(service.auto_fix_status, auth.username, project_id)
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
 
@@ -571,7 +619,8 @@ async def update_content_topics(
 ):
     try:
         return ok(
-            service.update_content_topics(
+            await asyncio.to_thread(
+                service.update_content_topics,
                 auth.username,
                 project_id,
                 topics=[topic.model_dump() for topic in payload.topics],
@@ -597,6 +646,35 @@ async def generate_content_images(
                     content_id=payload.content_id,
                     indexes=payload.indexes or None,
                 )
+            )
+        )
+    except PharmaTranslatorError as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/projects/{project_id}/content-batch/images-all")
+async def generate_all_content_images(
+    project_id: str,
+    auth: AuthContext = Depends(require_pharma_scope),
+    service: PharmaTranslatorService = Depends(get_service),
+):
+    """启动全项目批量配图后台任务（全部内容的全局并发池），立即返回任务状态。"""
+    try:
+        return ok(service.start_all_content_images(auth.username, project_id))
+    except PharmaTranslatorError as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/projects/{project_id}/content-batch/images-all")
+async def all_content_images_status(
+    project_id: str,
+    auth: AuthContext = Depends(require_pharma_scope),
+    service: PharmaTranslatorService = Depends(get_service),
+):
+    try:
+        return ok(
+            await asyncio.to_thread(
+                service.all_content_images_status, auth.username, project_id
             )
         )
     except PharmaTranslatorError as exc:
@@ -683,6 +761,7 @@ async def compliance_review_progress(
     )
 
 
+# 废弃接口：专家问询单创建入口已从界面移除，前端不再调用（answer 答复接口仍使用中）
 @router.post("/projects/{project_id}/compliance/expert-tickets")
 async def create_compliance_expert_ticket(
     project_id: str,
@@ -723,6 +802,7 @@ async def answer_compliance_expert_ticket(
     return ok(result)
 
 
+# 废弃接口：合规 AI 问答入口已从界面移除，前端不再调用
 @router.post("/projects/{project_id}/compliance/ai-ask")
 async def ask_compliance_ai(
     project_id: str,
@@ -761,7 +841,9 @@ async def export_keywords(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        filename, content = service.export_csv(auth.username, project_id)
+        filename, content = await asyncio.to_thread(
+            service.export_csv, auth.username, project_id
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return Response(
@@ -780,7 +862,9 @@ async def export_delivery(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        filename, content = service.export_delivery_json(auth.username, project_id)
+        filename, content = await asyncio.to_thread(
+            service.export_delivery_json, auth.username, project_id
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return Response(
@@ -815,7 +899,9 @@ async def export_approval_file(
     if spec is None:
         raise ApiError("不支持的导出类型", status_code=404)
     try:
-        filename, content = getattr(service, spec[0])(auth.username, project_id)
+        filename, content = await asyncio.to_thread(
+            getattr(service, spec[0]), auth.username, project_id
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return Response(
@@ -838,6 +924,7 @@ class PerformanceRequest(BaseModel):
     comment: str = Field(default="", max_length=500)
 
 
+# 废弃接口：发布状态回写入口已从界面移除，前端不再调用
 @router.post("/projects/{project_id}/contents/publish-status")
 async def update_publish_status(
     project_id: str,
@@ -846,7 +933,8 @@ async def update_publish_status(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.update_publish_status(
+        result = await asyncio.to_thread(
+            service.update_publish_status,
             username=auth.username,
             project_id=project_id,
             updates=body.updates,
@@ -857,6 +945,7 @@ async def update_publish_status(
     return ok(result)
 
 
+# 废弃接口：效果数据回传入口已从界面移除，前端不再调用
 @router.post("/projects/{project_id}/performance")
 async def record_performance(
     project_id: str,
@@ -865,7 +954,8 @@ async def record_performance(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.record_performance(
+        result = await asyncio.to_thread(
+            service.record_performance,
             username=auth.username,
             project_id=project_id,
             platform=body.platform,
@@ -884,15 +974,20 @@ async def sku_reuse_status(
     service: PharmaTranslatorService = Depends(get_service),
 ):
     try:
-        result = service.sku_reuse_status(auth.username, project_id)
+        result = await asyncio.to_thread(
+            service.sku_reuse_status, auth.username, project_id
+        )
     except PharmaTranslatorError as exc:
         raise _translate_error(exc) from exc
     return ok(result)
 
 
+# 废弃接口：爆款内容库查询入口已从界面移除，前端不再调用
 @router.get("/content-hits")
 async def list_content_hits(
     auth: AuthContext = Depends(require_pharma_scope),
     service: PharmaTranslatorService = Depends(get_service),
 ):
-    return ok({"items": service.list_content_hits(auth.username)})
+    return ok(
+        {"items": await asyncio.to_thread(service.list_content_hits, auth.username)}
+    )

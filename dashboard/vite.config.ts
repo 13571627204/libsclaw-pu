@@ -116,7 +116,21 @@ export default defineConfig(({ command }) => ({
   },
   build: {
     sourcemap: false,
-    chunkSizeWarningLimit: 1024 * 1024 // Set the limit to 1 MB
+    // 500KB 告警阈值，避免大 chunk 悄悄劣化页面加载
+    chunkSizeWarningLimit: 500,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return;
+          if (id.includes('monaco-editor') || id.includes('@guolao')) return 'monaco';
+          if (id.includes('vuetify')) return 'vuetify';
+          if (id.includes('apexcharts') || id.includes('d3')) return 'charts';
+          if (id.includes('katex')) return 'katex';
+          if (id.includes('mermaid')) return 'mermaid';
+          if (id.includes('@tiptap') || id.includes('prosemirror')) return 'tiptap';
+        }
+      }
+    }
   },
   optimizeDeps: {
     exclude: ['vuetify'],

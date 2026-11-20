@@ -116,8 +116,19 @@ Text chunk to process:
     return [chunk]
 
 
+def _sanitize_text(text: str) -> str:
+    """Rejoin surrogate pairs and drop lone surrogates/NULs that UTF-8 cannot store."""
+    return (
+        text.encode("utf-16", "surrogatepass")
+        .decode("utf-16", "replace")
+        .replace("\ufffd", "")
+        .replace("\x00", "")
+    )
+
+
 def _compact_chunks(chunks: list[str]) -> list[str]:
-    return [chunk.strip() for chunk in chunks if chunk and chunk.strip()]
+    cleaned = (_sanitize_text(chunk).strip() for chunk in chunks if chunk)
+    return [chunk for chunk in cleaned if chunk]
 
 
 class KBHelper:
@@ -443,7 +454,7 @@ class KBHelper:
                         ),
                         details={"file_name": file_name},
                     ) from exc
-                text_content = parse_result.text
+                text_content = _sanitize_text(parse_result.text or "")
                 source_content = text_content
                 media_items = parse_result.media
                 if not text_content or not text_content.strip():
@@ -630,7 +641,11 @@ class KBHelper:
             return doc
         except Exception as e:
             if isinstance(e, KnowledgeBaseUploadError):
-                logger.warning(f"上传文档失败: {e}", extra={"details": e.details})
+                cause = e.details.get("cause")
+                logger.warning(
+                    f"上传文档失败: {e}" + (f"（原因: {cause}）" if cause else ""),
+                    extra={"details": e.details},
+                )
             else:
                 logger.error(f"上传文档失败: {e}", exc_info=True)
 

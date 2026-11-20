@@ -205,6 +205,24 @@ async def main_async(webui_dir_arg: str | None) -> None:
     await core_lifecycle.start()
 
 
+async def run_with_dev_shutdown(webui_dir_arg: str | None) -> None:
+    shutdown_file = os.environ.get("LIBSCLAW_DEV_SHUTDOWN_FILE")
+    current_task = asyncio.current_task()
+    shutdown_watcher: asyncio.Task | None = None
+    if shutdown_file and current_task:
+        async def watch_shutdown_file() -> None:
+            while not os.path.exists(shutdown_file):
+                await asyncio.sleep(0.2)
+            current_task.cancel()
+
+        shutdown_watcher = asyncio.create_task(watch_shutdown_file())
+    try:
+        await main_async(webui_dir_arg)
+    finally:
+        if shutdown_watcher:
+            shutdown_watcher.cancel()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LibsClaw")
     parser.add_argument(
@@ -244,7 +262,7 @@ if __name__ == "__main__":
     async def _entry() -> None:
         state["loop"] = asyncio.get_running_loop()
         state["task"] = asyncio.current_task()
-        await main_async(args.webui_dir)
+        await run_with_dev_shutdown(args.webui_dir)
 
     def _runner() -> None:
         try:

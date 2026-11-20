@@ -86,8 +86,10 @@
     "confirmDelete": "确定要删除“{name}”吗？此操作无法撤销。"
   },
   "modes": {
-    "darkMode": "切换到夜间模式",
-    "lightMode": "切换到日间模式"
+    "title": "主题",
+    "systemMode": "跟随系统",
+    "darkMode": "月之暗面",
+    "lightMode": "月之亮面"
   },
   "shortcuts": {
     "help": "获取帮助",

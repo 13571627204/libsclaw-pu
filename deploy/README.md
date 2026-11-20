@@ -38,7 +38,8 @@ cd deploy
 #                                       端口被占(其他客户已用 / 本机已监听)→ 报错并提示换端口
 
 # 3. 启动客户
-./customer.sh up clienta
+
+
 ./customer.sh up clientb
 
 # 4. 访问 WebUI,在界面里完成业务配置(模型/Key/渠道/密码等)

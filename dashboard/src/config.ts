@@ -12,12 +12,17 @@ export type ConfigProps = {
 
 function checkThemeMode(): ThemeMode {
   const mode = localStorage.getItem('themeMode') as ThemeMode | null;
-  if (mode === 'light' || mode === 'dark' || mode === 'system') return mode;
+  // 暗色已禁用：历史 dark 偏好回退为亮色
+  if (mode === 'dark') {
+    localStorage.setItem('themeMode', 'light');
+    return 'light';
+  }
+  if (mode === 'light' || mode === 'system') return mode;
 
   const legacyTheme = localStorage.getItem('uiTheme');
   if (legacyTheme === 'PurpleThemeDark') {
-    localStorage.setItem('themeMode', 'dark');
-    return 'dark';
+    localStorage.setItem('themeMode', 'light');
+    return 'light';
   }
   if (legacyTheme === 'PurpleTheme') {
     localStorage.setItem('themeMode', 'light');
@@ -29,12 +34,9 @@ function checkThemeMode(): ThemeMode {
 }
 
 export function resolveUiTheme(mode: ThemeMode): string {
-  if (mode === 'dark') return 'PurpleThemeDark';
-  if (mode === 'light') return 'PurpleTheme';
-  const prefersDark =
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches;
-  return prefersDark ? 'PurpleThemeDark' : 'PurpleTheme';
+  // 暗色已禁用：任何模式（含 system）都解析为亮色主题
+  void mode;
+  return 'PurpleTheme';
 }
 
 const themeMode = checkThemeMode();

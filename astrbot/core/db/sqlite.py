@@ -66,7 +66,27 @@ class SQLiteDatabase(BaseDatabase):
             await self._ensure_persona_memory_column(conn)
             await self._ensure_platform_message_history_checkpoint_column(conn)
             await self._ensure_chatui_project_workspace_columns(conn)
+            await self._ensure_query_indexes(conn)
             await conn.commit()
+
+    async def _ensure_query_indexes(self, conn) -> None:
+        """为存量数据库补充高频查询索引（新库由 create_all 自动创建）。
+
+        create_all 对已存在的表不会补建索引，因此这里显式创建。
+        """
+        statements = [
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_platform_message_history_platform_user_created "
+            "ON platform_message_history (platform_id, user_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_conversations_created_at ON conversations (created_at)",
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_conversations_user_id ON conversations (user_id)",
+            "CREATE INDEX IF NOT EXISTS "
+            "ix_provider_stats_created_at ON provider_stats (created_at)",
+        ]
+        for stmt in statements:
+            await conn.execute(text(stmt))
 
     async def _ensure_persona_folder_columns(self, conn) -> None:
         """确保 personas 表有 folder_id 和 sort_order 列。
@@ -1558,92 +1578,93 @@ class SQLiteDatabase(BaseDatabase):
     # Deprecated Methods
     # ====
 
-    def get_base_stats(self, offset_sec=86400):
+    async def get_base_stats_async(self, offset_sec=86400):
         """Get base statistics within the specified offset in seconds."""
-
-        async def _inner():
-            async with self.get_db() as session:
-                session: AsyncSession
-                now = datetime.now()
-                start_time = now - timedelta(seconds=offset_sec)
-                result = await session.execute(
-                    select(PlatformStat).where(PlatformStat.timestamp >= start_time),
+        async with self.get_db() as session:
+            session: AsyncSession
+            now = datetime.now()
+            start_time = now - timedelta(seconds=offset_sec)
+            result = await session.execute(
+                select(PlatformStat).where(PlatformStat.timestamp >= start_time),
+            )
+            all_datas = result.scalars().all()
+            deprecated_stats = DeprecatedStats()
+            for data in all_datas:
+                deprecated_stats.platform.append(
+                    DeprecatedPlatformStat(
+                        name=data.platform_id,
+                        count=data.count,
+                        timestamp=int(data.timestamp.timestamp()),
+                    ),
                 )
-                all_datas = result.scalars().all()
-                deprecated_stats = DeprecatedStats()
-                for data in all_datas:
-                    deprecated_stats.platform.append(
-                        DeprecatedPlatformStat(
-                            name=data.platform_id,
-                            count=data.count,
-                            timestamp=int(data.timestamp.timestamp()),
-                        ),
-                    )
-                return deprecated_stats
+            return deprecated_stats
 
+    def get_base_stats(self, offset_sec=86400):
+        """Synchronous bridge for deprecated callers; prefer get_base_stats_async."""
         result = None
 
         def runner() -> None:
             nonlocal result
-            result = asyncio.run(_inner())
+            result = asyncio.run(self.get_base_stats_async(offset_sec))
 
         t = threading.Thread(target=runner)
         t.start()
         t.join()
         return result
+
+    async def get_total_message_count_async(self):
+        """Get the total message count from platform statistics."""
+        async with self.get_db() as session:
+            session: AsyncSession
+            result = await session.execute(
+                select(func.sum(PlatformStat.count)).select_from(PlatformStat),
+            )
+            total_count = result.scalar_one_or_none()
+            return total_count if total_count is not None else 0
 
     def get_total_message_count(self):
-        """Get the total message count from platform statistics."""
-
-        async def _inner():
-            async with self.get_db() as session:
-                session: AsyncSession
-                result = await session.execute(
-                    select(func.sum(PlatformStat.count)).select_from(PlatformStat),
-                )
-                total_count = result.scalar_one_or_none()
-                return total_count if total_count is not None else 0
-
+        """Synchronous bridge for deprecated callers; prefer get_total_message_count_async."""
         result = None
 
         def runner() -> None:
             nonlocal result
-            result = asyncio.run(_inner())
+            result = asyncio.run(self.get_total_message_count_async())
 
         t = threading.Thread(target=runner)
         t.start()
         t.join()
         return result
 
-    def get_grouped_base_stats(self, offset_sec=86400):
+    async def get_grouped_base_stats_async(self, offset_sec=86400):
         # group by platform_id
-        async def _inner():
-            async with self.get_db() as session:
-                session: AsyncSession
-                now = datetime.now()
-                start_time = now - timedelta(seconds=offset_sec)
-                result = await session.execute(
-                    select(PlatformStat.platform_id, func.sum(PlatformStat.count))
-                    .where(PlatformStat.timestamp >= start_time)
-                    .group_by(PlatformStat.platform_id),
+        async with self.get_db() as session:
+            session: AsyncSession
+            now = datetime.now()
+            start_time = now - timedelta(seconds=offset_sec)
+            result = await session.execute(
+                select(PlatformStat.platform_id, func.sum(PlatformStat.count))
+                .where(PlatformStat.timestamp >= start_time)
+                .group_by(PlatformStat.platform_id),
+            )
+            grouped_stats = result.all()
+            deprecated_stats = DeprecatedStats()
+            for platform_id, count in grouped_stats:
+                deprecated_stats.platform.append(
+                    DeprecatedPlatformStat(
+                        name=platform_id,
+                        count=count,
+                        timestamp=int(start_time.timestamp()),
+                    ),
                 )
-                grouped_stats = result.all()
-                deprecated_stats = DeprecatedStats()
-                for platform_id, count in grouped_stats:
-                    deprecated_stats.platform.append(
-                        DeprecatedPlatformStat(
-                            name=platform_id,
-                            count=count,
-                            timestamp=int(start_time.timestamp()),
-                        ),
-                    )
-                return deprecated_stats
+            return deprecated_stats
 
+    def get_grouped_base_stats(self, offset_sec=86400):
+        """Synchronous bridge for deprecated callers; prefer get_grouped_base_stats_async."""
         result = None
 
         def runner() -> None:
             nonlocal result
-            result = asyncio.run(_inner())
+            result = asyncio.run(self.get_grouped_base_stats_async(offset_sec))
 
         t = threading.Thread(target=runner)
         t.start()

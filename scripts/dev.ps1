@@ -136,6 +136,9 @@ $FrontendPort = Find-FreePort $FrontendPort
 $env:DASHBOARD_PORT = "$BackendPort"
 $env:LIBSCLAW_DEV_BACKEND_PORT = "$BackendPort"
 $env:LIBSCLAW_DEV_FRONTEND_PORT = "$FrontendPort"
+$BackendShutdownFile = Join-Path $env:TEMP "libsclaw-dev-$PID.shutdown"
+$env:LIBSCLAW_DEV_SHUTDOWN_FILE = $BackendShutdownFile
+Remove-Item -Path $BackendShutdownFile -Force -ErrorAction SilentlyContinue
 
 # -- Backend: redirect output, show only credential/error lines --
 $LogDir = Join-Path $ProjectRoot "logs"
@@ -210,6 +213,16 @@ function Stop-Tree($proc) {
     }
 }
 
+function Stop-BackendGracefully($proc) {
+    if (-not $proc -or $proc.HasExited) { return }
+
+    Set-Content -Path $BackendShutdownFile -Value "shutdown"
+    if (-not $proc.WaitForExit(10000)) {
+        Write-Dev "Backend did not stop within 10 seconds; forcing process-tree termination." Yellow
+        Stop-Tree $proc
+    }
+}
+
 try {
     Write-Host ""
     Write-Dev "Backend port: $BackendPort (full log: logs\dev-backend.log)"
@@ -248,7 +261,8 @@ try {
 } finally {
     Write-Dev "Stopping development servers..."
     Stop-Tree $frontend
-    Stop-Tree $backend
+    Stop-BackendGracefully $backend
+    Remove-Item -Path $BackendShutdownFile -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 300
     Write-Dev "Development servers stopped." Green
 }

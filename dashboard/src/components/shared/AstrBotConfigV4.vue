@@ -1,7 +1,6 @@
 <script setup>
 import MarkdownIt from 'markdown-it'
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
-import '@/plugins/monaco'
+import VueMonacoEditor from '@/components/shared/AsyncMonacoEditor'
 import { ref, computed } from 'vue'
 import ConfigItemRenderer from './ConfigItemRenderer.vue'
 import TemplateListEditor from './TemplateListEditor.vue'

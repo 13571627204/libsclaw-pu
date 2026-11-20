@@ -143,14 +143,23 @@ export const useCommonStore = defineStore("common", {
             }, 2000);
             return;
           }
-          console.error("SSE error:", error);
+          // 网络瞬时中断（TypeError: network error 等）会触发自动重连，
+          // 降级为警告避免控制台/日志刷屏；非网络类错误仍按 ERROR 记录
+          const transient = error instanceof TypeError;
+          if (transient) {
+            console.warn("SSE 连接中断（网络波动），将自动重连:", error);
+          } else {
+            console.error("SSE error:", error);
+          }
           // Attempt to reconnect after a delay
           this.log_cache.push({
             type: "log",
-            level: "ERROR",
+            level: transient ? "WARNING" : "ERROR",
             time: Date.now() / 1000,
-            data: "SSE Connection failed, retrying in 5 seconds...",
-            uuid: "error-" + Date.now(),
+            data: transient
+              ? "SSE 连接中断（网络波动），5 秒后自动重连…"
+              : "SSE Connection failed, retrying in 5 seconds...",
+            uuid: (transient ? "warn-" : "error-") + Date.now(),
           });
           setTimeout(() => {
             this.eventSource = null;

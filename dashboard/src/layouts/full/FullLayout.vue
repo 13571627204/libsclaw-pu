@@ -143,7 +143,11 @@ onMounted(() => {
             >
               <Chat :active="isCurrentChatRoute" />
             </div>
-            <RouterView v-if="!isCurrentChatRoute" />
+            <RouterView v-slot="{ Component }">
+              <KeepAlive include="PharmaTranslatorPage">
+                <component :is="Component" v-if="!isCurrentChatRoute" />
+              </KeepAlive>
+            </RouterView>
           </div>
         </v-container>
       </v-main>

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TypedDict
 
+from sqlalchemy import Index
 from sqlmodel import JSON, Field, SQLModel, Text, UniqueConstraint
 
 PERSONA_MEMORY_MAX_CHARS = 32_000
@@ -63,6 +64,11 @@ class ProviderStat(TimestampMixin, SQLModel, table=True):
     end_time: float = Field(default=0.0, nullable=False)
     time_to_first_token: float = Field(default=0.0, nullable=False)
 
+    __table_args__ = (
+        # token 统计接口按 created_at 做日期范围过滤
+        Index("ix_provider_stats_created_at", "created_at"),
+    )
+
 
 class ConversationV2(TimestampMixin, SQLModel, table=True):
     __tablename__: str = "conversations"
@@ -95,6 +101,9 @@ class ConversationV2(TimestampMixin, SQLModel, table=True):
             "conversation_id",
             name="uix_conversation_id",
         ),
+        # 对话列表按 created_at 倒序分页；按 user_id 过滤
+        Index("ix_conversations_created_at", "created_at"),
+        Index("ix_conversations_user_id", "user_id"),
     )
 
 
@@ -249,6 +258,16 @@ class PlatformMessageHistory(TimestampMixin, SQLModel, table=True):
     )  # Name of the sender in the platform
     content: dict = Field(sa_type=JSON, nullable=False)  # a message chain list
     llm_checkpoint_id: str | None = Field(default=None, index=True)
+
+    __table_args__ = (
+        # 聊天页按 platform_id + user_id 过滤并按 created_at 倒序取历史
+        Index(
+            "ix_platform_message_history_platform_user_created",
+            "platform_id",
+            "user_id",
+            "created_at",
+        ),
+    )
 
 
 class WebChatThread(TimestampMixin, SQLModel, table=True):

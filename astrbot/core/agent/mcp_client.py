@@ -491,30 +491,29 @@ class MCPClient:
             self._cancel_connection_task(self._connection_task)
             self._connection_task = None
 
-        self._connection_task = asyncio.create_task(
+        connection_task = asyncio.create_task(
             self._run_connection(mcp_server_config, name, ready),
             name=f"mcp-conn:{name}",
         )
+        self._connection_task = connection_task
 
         try:
             await ready
         except asyncio.CancelledError:
-            # Caller was cancelled while waiting — tear down the connection task.
-            # cancel() is asynchronous; the task will not finish until the next
-            # event-loop iteration, so we track it in _old_connection_tasks so
-            # that cleanup() can await it later.
-            if self._connection_task and not self._connection_task.done():
-                self._cancel_connection_task(self._connection_task)
-            self._connection_task = None
+            # The owner task must finish its own finally block so anyio cancel
+            # scopes are closed by the task that entered them.
+            if not connection_task.done():
+                connection_task.cancel()
+            await asyncio.gather(connection_task, return_exceptions=True)
+            if self._connection_task is connection_task:
+                self._connection_task = None
             raise
         except Exception:
-            # _do_connect raised; the connection task's finally block may still
-            # be running (e.g. awaiting stack.aclose()).  Track it so that
-            # cleanup() can await it, but do NOT cancel it — we want the
-            # finally block to finish cleaning up resources naturally.
-            if self._connection_task and not self._connection_task.done():
-                self._old_connection_tasks.append(self._connection_task)
-            self._connection_task = None
+            # Consume the owner task's exception only after its finally block
+            # has finished, then preserve the original exception from ready.
+            await asyncio.gather(connection_task, return_exceptions=True)
+            if self._connection_task is connection_task:
+                self._connection_task = None
             raise
 
     async def _do_connect(self, mcp_server_config: dict, name: str) -> None:
@@ -661,12 +660,23 @@ class MCPClient:
 
     def _cancel_connection_task(self, task: asyncio.Task) -> None:
         """Cancel a connection owner task and track it until it finishes."""
-        # Prune already-finished tasks to avoid accumulating references over
-        # many reconnections in a long-running process.
-        self._old_connection_tasks = [
-            t for t in self._old_connection_tasks if not t.done()
-        ]
+        # Retrieve exceptions before pruning completed tasks so asyncio never
+        # reports an abandoned owner-task failure.
+        pending_tasks = []
+        for old_task in self._old_connection_tasks:
+            if old_task.done():
+                try:
+                    old_task.exception()
+                except asyncio.CancelledError:
+                    pass
+            else:
+                pending_tasks.append(old_task)
+        self._old_connection_tasks = pending_tasks
         if task.done():
+            try:
+                task.exception()
+            except asyncio.CancelledError:
+                pass
             return
         task.cancel()
         self._old_connection_tasks.append(task)
@@ -782,9 +792,10 @@ class MCPClient:
             self._connection_task = None
 
         if self._old_connection_tasks:
-            pending = [t for t in self._old_connection_tasks if not t.done()]
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(
+                *self._old_connection_tasks,
+                return_exceptions=True,
+            )
             self._old_connection_tasks.clear()
 
         # Set running_event to unblock any waiting tasks

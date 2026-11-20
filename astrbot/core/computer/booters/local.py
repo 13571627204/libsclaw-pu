@@ -160,6 +160,15 @@ class LocalShellComponent(ShellComponent):
         return await asyncio.to_thread(_run)
 
 
+# Windows tools often write JSON with a UTF-8 BOM; make json.loads/json.load tolerate it.
+_PYTHON_EXEC_PRELUDE = (
+    "import json as _j\n"
+    "_jl = _j.loads\n"
+    "_j.loads = lambda s, *a, **k: _jl(s.lstrip('\\ufeff') if isinstance(s, str) else s, *a, **k)\n"
+    "del _j\n"
+)
+
+
 @dataclass
 class LocalPythonComponent(PythonComponent):
     async def exec(
@@ -174,10 +183,19 @@ class LocalPythonComponent(PythonComponent):
             try:
                 working_dir = os.path.abspath(cwd) if cwd else get_astrbot_root()
                 result = subprocess.run(
-                    [os.environ.get("PYTHON", sys.executable), "-c", code],
+                    [
+                        os.environ.get("PYTHON", sys.executable),
+                        "-c",
+                        _PYTHON_EXEC_PRELUDE + code,
+                    ],
                     timeout=timeout,
                     capture_output=True,
                     cwd=working_dir,
+                    env={
+                        **os.environ,
+                        "PYTHONUTF8": "1",
+                        "PYTHONIOENCODING": "utf-8",
+                    },
                 )
                 stdout = "" if silent else _decode_shell_output(result.stdout)
                 stderr = (

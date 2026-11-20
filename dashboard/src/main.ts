@@ -13,24 +13,21 @@ import { installRoutePrefetch } from './utils/routePrefetch.mjs';
 setupHttpClient();
 
 /**
- * 挂载后初始化主题并注册全局系统主题监听器。
+ * 挂载后初始化主题。
  * 职责：
  *   - 同步 Vuetify theme 名称与 store 中的 uiTheme
- *   - 当 themeMode === 'system' 时，监听系统色彩模式变化，实时更新两者
  *   - 应用自定义 primary/secondary 色
- * 注意：VerticalHeader.vue / ThemeSwitcher.vue 不再自行注册 matchMedia 监听器，
- *       避免与此处产生竞态。
+ * 注意：暗色已全局禁用，uiTheme 恒为 PurpleTheme，
+ *       无需再监听系统色彩模式变化。
  */
 function setupThemeSync(pinia: ReturnType<typeof createPinia>) {
   import('./stores/customizer').then(({ useCustomizerStore }) => {
     const customizer = useCustomizerStore(pinia);
 
-    // 1. 若当前是 system 模式，重新用 matchMedia 计算，防止 SSR / 构建时偏差
-    if (customizer.themeMode === 'system') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const uiTheme = prefersDark ? 'PurpleThemeDark' : 'PurpleTheme';
-      customizer.uiTheme = uiTheme;
-      localStorage.setItem('uiTheme', uiTheme);
+    // 1. 强制对齐到亮色主题，清除历史 dark 残留
+    if (customizer.uiTheme !== 'PurpleTheme') {
+      customizer.uiTheme = 'PurpleTheme';
+      localStorage.setItem('uiTheme', 'PurpleTheme');
     }
 
     // 2. 将 Vuetify 主题对齐到 store
@@ -50,16 +47,6 @@ function setupThemeSync(pinia: ReturnType<typeof createPinia>) {
         if (storedSecondary && theme.colors.darksecondary) theme.colors.darksecondary = storedSecondary;
       });
     }
-
-    // 4. 全局唯一 matchMedia 监听器：仅在 system 模式下响应系统切换
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    mediaQuery.addEventListener('change', (e) => {
-      if (customizer.themeMode !== 'system') return;
-      const uiTheme = e.matches ? 'PurpleThemeDark' : 'PurpleTheme';
-      customizer.uiTheme = uiTheme;
-      localStorage.setItem('uiTheme', uiTheme);
-      vuetify.theme.global.name.value = uiTheme;
-    });
   });
 }
 

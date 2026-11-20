@@ -299,8 +299,7 @@
 </template>
 
 <script>
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor';
-import '@/plugins/monaco';
+import VueMonacoEditor from '@/components/shared/AsyncMonacoEditor';
 import { mcpApi } from '@/api/v1';
 import { useI18n, useModuleI18n } from '@/i18n/composables';
 import OutlinedActionListItem from '@/components/shared/OutlinedActionListItem.vue';

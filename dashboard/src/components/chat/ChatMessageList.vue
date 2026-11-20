@@ -305,10 +305,12 @@
               @retry-with-model="emit('regenerateWithModel', msg, $event)"
             />
             <v-btn
-              v-if="enableCopy && !isUserMessage(msg)"
+              v-if="enableCopy"
               icon="mdi-content-copy"
               size="x-small"
               variant="text"
+              aria-label="复制消息内容"
+              title="复制"
               @click="copyMessage(msg)"
             />
             <v-menu
@@ -1068,6 +1070,27 @@ function formatDuration(seconds: number) {
   background: rgba(255, 255, 255, 0.72);
   padding: 13px 16px;
   border-radius: 6px 18px 18px 18px;
+}
+
+.chat-message-list.is-dark .message-bubble.user {
+  color: #e8f3fb;
+  border-color: rgba(42, 143, 204, 0.38);
+  background: linear-gradient(
+    180deg,
+    rgba(42, 143, 204, 0.32) 0%,
+    rgba(42, 143, 204, 0.22) 100%
+  );
+}
+
+.chat-message-list.is-dark .message-bubble.bot {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.chat-message-list.is-dark .bot-avatar-symbol {
+  border-color: rgba(42, 143, 204, 0.32);
+  background: rgba(42, 143, 204, 0.18);
+  color: #6fb8e8;
 }
 
 .plain-content {

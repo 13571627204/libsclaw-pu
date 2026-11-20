@@ -346,7 +346,7 @@ class TestGetToolListPermission:
         )
         try:
             service.tool_mgr.func_list.append(_dummy_tool("my_plugin_tool"))
-            tools = service.get_tool_list()
+            tools = await service.get_tool_list()
 
             target = next(t for t in tools if t["name"] == "my_plugin_tool")
             assert target["permission"] == "admin"
@@ -358,7 +358,7 @@ class TestGetToolListPermission:
     @pytest.mark.asyncio
     async def test_list_includes_permission_fields_for_builtin(self):
         service = _make_tools_service()
-        tools = service.get_tool_list()
+        tools = await service.get_tool_list()
 
         target = next(t for t in tools if t["name"] == "astrbot_execute_shell")
         assert target["permission"] == "member"
@@ -376,7 +376,7 @@ class TestUpdateToolPermission:
         service.tool_mgr.func_list.append(_dummy_tool("target_tool"))
         _clear_tool_permissions()
 
-        message = service.update_tool_permission(
+        message = await service.update_tool_permission(
             {"name": "target_tool", "permission": "admin"}
         )
         assert "target_tool" in message
@@ -390,7 +390,7 @@ class TestUpdateToolPermission:
         _clear_tool_permissions()
 
         try:
-            message = service.update_tool_permission(
+            message = await service.update_tool_permission(
                 {"name": "astrbot_execute_shell", "permission": "admin"}
             )
             assert "astrbot_execute_shell" in message
@@ -444,7 +444,7 @@ class TestUpdateToolPermission:
         service = _make_tools_service()
 
         with pytest.raises(ToolsServiceError, match="not found"):
-            service.update_tool_permission(
+            await service.update_tool_permission(
                 {"name": "astrbot_not_registered", "permission": "admin"}
             )
 
@@ -453,7 +453,7 @@ class TestUpdateToolPermission:
         service = _make_tools_service()
 
         with pytest.raises(ToolsServiceError, match="not found"):
-            service.update_tool_permission(
+            await service.update_tool_permission(
                 {"name": "ghost_tool", "permission": "admin"}
             )
 
@@ -463,6 +463,6 @@ class TestUpdateToolPermission:
         service.tool_mgr.func_list.append(_dummy_tool("target_tool"))
 
         with pytest.raises(ToolsServiceError, match="admin or member"):
-            service.update_tool_permission(
+            await service.update_tool_permission(
                 {"name": "target_tool", "permission": "everyone"}
             )

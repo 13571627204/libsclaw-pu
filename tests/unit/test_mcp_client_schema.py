@@ -1,7 +1,14 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from astrbot.core.agent.mcp_client import MCPTool, _normalize_mcp_input_schema
+import pytest
+
+from astrbot.core.agent.mcp_client import (
+    MCPClient,
+    MCPTool,
+    _normalize_mcp_input_schema,
+)
 
 
 class TestNormalizeMcpInputSchema:
@@ -94,6 +101,55 @@ class TestNormalizeMcpInputSchema:
         assert "required" not in normalized["properties"]["stock_code"]
         assert schema["properties"]["server"] == "invalid-property-schema"
         assert schema["properties"]["market"]["required"] == "yes"
+
+
+class TestMCPClientConnectionTaskCleanup:
+    @pytest.mark.asyncio
+    async def test_connect_consumes_initialization_task_exception(self, monkeypatch):
+        client = MCPClient()
+        finally_completed = asyncio.Event()
+        connection_tasks = []
+        create_task = asyncio.create_task
+
+        def capture_task(coro, *, name=None):
+            task = create_task(coro, name=name)
+            connection_tasks.append(task)
+            return task
+
+        async def fail_connect(_config, _name):
+            try:
+                raise RuntimeError("initialize failed")
+            finally:
+                await asyncio.sleep(0)
+                finally_completed.set()
+
+        monkeypatch.setattr(asyncio, "create_task", capture_task)
+        monkeypatch.setattr(client, "_do_connect", fail_connect)
+
+        with pytest.raises(RuntimeError, match="initialize failed"):
+            await client.connect_to_server({}, "broken")
+
+        assert finally_completed.is_set()
+        assert connection_tasks[0].done()
+        assert connection_tasks[0]._log_traceback is False
+        assert client._connection_task is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_consumes_completed_old_task_exception(self):
+        client = MCPClient()
+
+        async def fail():
+            raise RuntimeError("old connection failed")
+
+        old_task = asyncio.create_task(fail())
+        await asyncio.sleep(0)
+        assert old_task.done()
+        client._old_connection_tasks.append(old_task)
+
+        await client.cleanup()
+
+        assert old_task._log_traceback is False
+        assert client._old_connection_tasks == []
 
 
 class TestMCPToolSchemaNormalization:

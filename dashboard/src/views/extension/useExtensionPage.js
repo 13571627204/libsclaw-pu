@@ -500,13 +500,16 @@ export const useExtensionPage = () => {
       loading_.value = true;
     }
     try {
-      const res = await pluginApi.list();
+      // list 与 failed 相互独立，并行请求
+      const [res, failRes] = await Promise.all([
+        pluginApi.list(),
+        pluginApi.failed(),
+      ]);
       Object.assign(extension_data, res.data);
 
       // 同步插件数据到侧边栏共享状态
       pluginSidebarState.plugins = res.data?.data || [];
 
-      const failRes = await pluginApi.failed();
       failedPluginsDict.value = failRes.data.data || {};
 
       if (pluginMarketData.value.length > 0) {
@@ -2223,10 +2226,12 @@ export const useExtensionPage = () => {
     }
     loading_.value = true;
     try {
-      await getExtensions({ withLoading: false });
-
-      // 加载自定义插件源
-      await loadCustomSources();
+      // 已装插件列表与自定义插件源相互独立，并行加载
+      // （getPluginCollections 依赖 loadCustomSources 后的 selectedSource，保持在其后）
+      await Promise.all([
+        getExtensions({ withLoading: false }),
+        loadCustomSources(),
+      ]);
 
       // 检查是否有 open_config 参数
       const plugin_name = Array.isArray(route.query.open_config)

@@ -86,6 +86,21 @@ class BaseDatabase(abc.ABC):
         """获取基础统计数据(合并)"""
         raise NotImplementedError
 
+    @abc.abstractmethod
+    async def get_base_stats_async(self, offset_sec: int = 86400) -> Stats:
+        """获取基础统计数据（原生异步实现）"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def get_total_message_count_async(self) -> int:
+        """获取总消息数（原生异步实现）"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    async def get_grouped_base_stats_async(self, offset_sec: int = 86400) -> Stats:
+        """获取基础统计数据（合并，原生异步实现）"""
+        raise NotImplementedError
+
     # New methods in v4.0.0
 
     @abc.abstractmethod

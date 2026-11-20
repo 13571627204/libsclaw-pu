@@ -934,6 +934,29 @@ def test_content_model_json_repairs_common_errors(raw, expected):
     assert PharmaTranslatorService._loads_model_json(raw) == expected
 
 
+def test_content_batch_provider_prefers_local_or_fast_without_changing_general(
+    tmp_path: Path,
+):
+    service = PharmaTranslatorService(tmp_path)
+    current = FakeChatProvider(provider_id="quality-model")
+    fast = FakeChatProvider(provider_id="vendor-flash")
+    local = FakeChatProvider(
+        provider_id="local-model", api_base="http://127.0.0.1:11434/v1"
+    )
+    image = FakeChatProvider(provider_id="image-turbo")
+    _attach_models(service, [current, fast, local, image], current=current)
+
+    assert service._generation_provider()[0] is current
+    selected, label = service._content_batch_provider()
+    assert selected is local
+    assert label == "local-model（openai_chat_completion）"
+
+    _attach_models(service, [current, fast, image], current=current)
+    assert service._content_batch_provider()[0] is fast
+    _attach_models(service, [current, fast, local], current=fast)
+    assert service._content_batch_provider()[0] is fast
+
+
 @pytest.mark.asyncio
 async def test_content_groups_retry_failed_group_once(tmp_path: Path):
     service = PharmaTranslatorService(tmp_path)
@@ -947,6 +970,57 @@ async def test_content_groups_retry_failed_group_once(tmp_path: Path):
 
     outcomes = await service._run_content_groups(FlakyProvider(), "p", ["s"])
     assert outcomes == [{"items": []}] and calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_content_groups_retry_only_failures_on_backups_in_order(tmp_path: Path):
+    service = PharmaTranslatorService(tmp_path)
+
+    class PrimaryProvider:
+        provider_config = {"id": "primary", "type": "openai_chat_completion"}
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def text_chat(self, **kwargs):
+            schema = kwargs["system_prompt"].rsplit("SCHEMA:", 1)[-1]
+            self.calls.append(schema)
+            if schema in {"one", "three"}:
+                raise asyncio.TimeoutError()
+            return SimpleNamespace(completion_text=json.dumps({"group": schema}))
+
+    class BackupProvider:
+        def __init__(self, provider_id: str):
+            self.provider_config = {
+                "id": provider_id,
+                "type": "openai_chat_completion",
+            }
+            self.calls: list[str] = []
+
+        async def text_chat(self, **kwargs):
+            schema = kwargs["system_prompt"].rsplit("SCHEMA:", 1)[-1]
+            self.calls.append(schema)
+            return SimpleNamespace(completion_text=json.dumps({"group": schema}))
+
+    primary = PrimaryProvider()
+    backup_a = BackupProvider("backup-a")
+    backup_b = BackupProvider("backup-b")
+    service._generation_providers = lambda: [
+        (primary, "主模型"),
+        (backup_a, "备用 A"),
+        (backup_b, "备用 B"),
+    ]
+
+    outcomes = await service._run_content_groups(
+        primary, "p", ["SCHEMA:one", "SCHEMA:two", "SCHEMA:three"]
+    )
+
+    assert outcomes == [{"group": "one"}, {"group": "two"}, {"group": "three"}]
+    # 分组按序轮询分配首个模型：one→primary（失败后按序重试 backup_a）、
+    # two→backup_a、three→backup_b；全部组都成功且不重复调用
+    assert primary.calls == ["one"]
+    assert sorted(backup_a.calls) == ["one", "two"]
+    assert backup_b.calls == ["three"]
 
 
 @pytest.mark.asyncio
@@ -1154,11 +1228,117 @@ class _JsonChatProvider:
         )
 
 
+class _ConcurrentCompetitorProvider(_JsonChatProvider):
+    def __init__(self, output, *, provider_id="competitor", failure=None):
+        super().__init__(output)
+        self.provider_config.update(
+            {
+                "id": provider_id,
+                "model": provider_id,
+                "api_base": "https://models.example/v1",
+            }
+        )
+        self.failure = failure
+        self.active = 0
+        self.max_active = 0
+
+    async def text_chat(self, **kwargs):
+        self.calls.append(kwargs)
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            if self.failure is not None:
+                raise self.failure
+            return SimpleNamespace(
+                completion_text=json.dumps(self.output, ensure_ascii=False)
+            )
+        finally:
+            self.active -= 1
+
+
+async def _competitor_project(service, monkeypatch):
+    from astrbot.dashboard.services import pharma_competitor
+
+    project = await _dimension_project(service)
+    dimensions, constraints = _confirm_dimensions(project)
+    project = _workflow_action(
+        service,
+        project,
+        "confirm_dimensions",
+        {"dimensions": dimensions, "safety_constraints": constraints},
+    )
+    project = await _pass_literature(service, project)
+    project = _workflow_action(
+        service, project, "confirm_scenes", {"scenes": project["scenes"]}
+    )
+
+    async def fake_tikhub(platforms, keywords, per_keyword=20):
+        return [dict(item) for item in COMPETITOR_SAMPLES], []
+
+    monkeypatch.setattr(pharma_competitor, "collect_tikhub", fake_tikhub)
+    return await service.scan_competitors(
+        "workflow-user",
+        project["project_id"],
+        mode="deep",
+        platforms=["douyin", "xiaohongshu"],
+        keywords=["失眠"],
+    )
+
+
 async def _dimension_project(service, text=LEAFLET_TEXT + DIMENSION_TEXT):
     project = await _new_project(service, text)
     return _workflow_action(
         service, project, "confirm_profile", {"fields": _confirm_all_fields(project)}
     )
+
+
+def test_generation_providers_deduplicate_logical_models(tmp_path):
+    service = PharmaTranslatorService(tmp_path)
+    first = _ConcurrentCompetitorProvider(
+        _competitor_analysis_output(), provider_id="same-model"
+    )
+    duplicate = _ConcurrentCompetitorProvider(
+        _competitor_analysis_output(), provider_id="same-model"
+    )
+    _attach_models(service, [first, duplicate], current=first)
+
+    assert [provider for provider, _ in service._generation_providers()] == [first]
+
+
+@pytest.mark.asyncio
+async def test_competitor_analysis_spreads_groups_and_shares_failures(
+    tmp_path, monkeypatch
+):
+    service = PharmaTranslatorService(tmp_path)
+    project = await _competitor_project(service, monkeypatch)
+    failed = _ConcurrentCompetitorProvider(
+        _competitor_analysis_output(), provider_id="slow", failure=RuntimeError("boom")
+    )
+    fallback = _ConcurrentCompetitorProvider(
+        _competitor_analysis_output(), provider_id="fallback"
+    )
+    _attach_models(service, [failed, fallback], current=failed)
+
+    analyzed = await service.analyze_competitors(
+        "workflow-user", project["project_id"]
+    )
+
+    # 分析组按模型轮询分发、每模型并发 2：起始落在 failed 的两组并行失败后
+    # 共享失败状态并切换到 fallback，最终 5 个组全部由 fallback 完成
+    assert failed.max_active <= 2
+    assert len(failed.calls) == 2
+    assert fallback.max_active <= 2
+    assert len(fallback.calls) == 5
+    assert sorted(call["max_tokens"] for call in fallback.calls) == [
+        800,
+        1000,
+        1000,
+        1200,
+        1600,
+    ]
+    assert all(call["request_max_retries"] == 1 for call in fallback.calls)
+    assert analyzed["competitor"]["analysis"]["gap_map"]
 
 
 @pytest.mark.asyncio
@@ -2317,6 +2497,12 @@ async def test_literature_claims_extracted_from_confirmed_dimensions(tmp_path: P
     for claim in claims:
         by_type.setdefault(claim["claim_type"], []).append(claim)
     assert {item["text"] for item in by_type["ingredients"]} == {"鹿茸", "干姜"}
+    assert all(
+        item["product_name"] == "安神补脑液"
+        and item["triple_card"]["compliant_copy"]
+        == f"安神补脑液含{item['text']}（详见说明书【成分】项）"
+        for item in by_type["ingredients"]
+    )
     assert any(item["text"].startswith("生精补髓") for item in by_type["efficacy"])
     assert by_type["audience"][0]["text"] == "成年气血不足人群"
     assert any("国药准字" in item["text"] for item in by_type["endorsement"])
@@ -2326,6 +2512,62 @@ async def test_literature_claims_extracted_from_confirmed_dimensions(tmp_path: P
     assert all(claim["match_status"] == "pending" for claim in claims)
     assert all(claim["triple_card"]["compliant_copy"] for claim in claims)
     assert all(claim["triple_card"]["disclaimer"] for claim in claims)
+
+
+@pytest.mark.asyncio
+async def test_literature_ingredients_keep_all_main_and_auxiliary_items(tmp_path: Path):
+    """成分卖点完整保留主成分与辅料，不受分类或全局条数上限截断。"""
+    service = PharmaTranslatorService(tmp_path)
+    project = await _new_project(service)
+    project = _workflow_action(
+        service, project, "confirm_profile", {"fields": _confirm_all_fields(project)}
+    )
+    dimensions, constraints = _confirm_dimensions(project)
+    seed = next(
+        item for dimension in dimensions for item in dimension["items"]
+    )
+    ingredient_text = (
+        "【成份】皂矾、沙棘、鹿茸、干姜、甘草、大枣、丹参、当归、黄芪、党参、"
+        "熟地黄、枸杞子。辅料：蔗糖、维生素C。\n【性状】本品为棕色液体。"
+    )
+    for dimension in dimensions:
+        items = dimension["items"]
+        if dimension["dimension_id"] == "ingredients":
+            dimension["items"] = [
+                {**seed, "text": ingredient_text, "source_text": ingredient_text},
+                {
+                    **seed,
+                    "item_id": "ingredient-auxiliary-separate",
+                    "text": "辅料：淀粉。",
+                    "source_label": "辅料",
+                    "source_text": "辅料：淀粉。",
+                },
+            ]
+        elif dimension["dimension_id"] in {"efficacy", "audience", "endorsement"}:
+            limit = {"efficacy": 6, "audience": 4, "endorsement": 4}[
+                dimension["dimension_id"]
+            ]
+            dimension["items"] = [
+                {
+                    **seed,
+                    "item_id": f"{dimension['dimension_id']}-limit-{index}",
+                    "text": f"{dimension['dimension_id']}卖点{index}",
+                    "source_text": f"{dimension['dimension_id']}卖点{index}",
+                }
+                for index in range(1, limit + 1)
+            ]
+    project["dimensions"] = dimensions
+    claims = service._build_literature_claims(project)
+    ingredient_claims = [
+        claim for claim in claims if claim["claim_type"] == "ingredients"
+    ]
+    assert len(ingredient_claims) == 15
+    assert len(claims) == 29
+    assert [claim["claim_type"] for claim in claims[:15]] == ["ingredients"] * 15
+    ingredient_texts = {claim["text"] for claim in ingredient_claims}
+    assert {"辅料：蔗糖", "辅料：维生素C", "辅料：淀粉"} <= ingredient_texts
+    assert not any("性状" in text or "棕色液体" in text for text in ingredient_texts)
+    assert all(claim["product_name"] == "安神补脑液" for claim in ingredient_claims)
 
 
 @pytest.mark.asyncio
@@ -2343,7 +2585,7 @@ async def test_literature_upload_pdf_docx_and_validation(tmp_path: Path):
         )
 
     project = await _literature_ready_project(service)
-    with pytest.raises(PharmaTranslatorError, match="仅支持 PDF 和 DOCX"):
+    with pytest.raises(PharmaTranslatorError, match="文献仅支持 .txt"):
         await service.add_literature(
             username="workflow-user",
             project_id=project["project_id"],
@@ -2440,8 +2682,16 @@ async def test_literature_match_three_color_labels(tmp_path: Path):
     assert levels[0] == "strong" and levels[-1] == "none"
     assert efficacy["triple_card"]["citation_summary"]
     assert "RCT研究.pdf" in efficacy["triple_card"]["citation_summary"]
+    # 三联卡文献来源按标准通道列出：产品说明书 / 企业商品文献 / 本地知识库
+    source_keys = [s["key"] for s in efficacy["triple_card"]["citation_sources"]]
+    assert source_keys[:3] == ["leaflet", "uploaded", "knowledge_base"]
+    uploaded = efficacy["triple_card"]["citation_sources"][1]
+    assert any("RCT研究.pdf" in label for label in uploaded["labels"])
     red = project["literature_claims"][-1]
-    assert red["triple_card"]["citation_summary"] == "无文献来源"
+    red_sources = {s["key"]: s for s in red["triple_card"]["citation_sources"]}
+    assert red_sources["uploaded"]["labels"] == []
+    assert red_sources["knowledge_base"]["labels"] == []
+    assert "企业商品文献：未命中" in red["triple_card"]["citation_summary"]
 
 
 @pytest.mark.asyncio

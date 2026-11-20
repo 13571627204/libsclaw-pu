@@ -137,6 +137,63 @@ export function useMessages(options: UseMessagesOptions) {
     {},
   );
 
+  // —— 流式渲染合帧 ——
+  // SSE/WebSocket 每个 chunk 都是一个独立事件，若每次都直接改响应式数据，
+  // 每个 token 都会触发一次完整的 Vue 重渲染。这里把连续的 plain/推理文本
+  // 按消息缓冲，每个 animation frame 批量提交一次；遇到任何结构化事件
+  // （工具调用、图片、统计、结束等）立即冲刷缓冲区，保证分段顺序不变。
+  const pendingPlainText = new Map<ChatRecord, string>();
+  const pendingReasoningText = new Map<ChatRecord, string>();
+  let streamFlushScheduled = false;
+
+  function flushRecordBuffers(record: ChatRecord) {
+    const plain = pendingPlainText.get(record);
+    if (plain) {
+      pendingPlainText.delete(record);
+      appendPlain(record, plain, true);
+    }
+    const reasoning = pendingReasoningText.get(record);
+    if (reasoning) {
+      pendingReasoningText.delete(record);
+      appendReasoningPart(record, reasoning);
+    }
+  }
+
+  function flushAllStreamBuffers() {
+    const records = new Set<ChatRecord>([
+      ...pendingPlainText.keys(),
+      ...pendingReasoningText.keys(),
+    ]);
+    for (const record of records) {
+      flushRecordBuffers(record);
+    }
+  }
+
+  function scheduleStreamFlush() {
+    if (streamFlushScheduled) return;
+    streamFlushScheduled = true;
+    requestAnimationFrame(() => {
+      streamFlushScheduled = false;
+      flushAllStreamBuffers();
+    });
+  }
+
+  function appendPlainBatched(record: ChatRecord, text: string) {
+    // 分段类型从推理切回正文前，先冲刷推理缓冲，保证分段顺序
+    if (pendingReasoningText.has(record)) flushRecordBuffers(record);
+    pendingPlainText.set(record, (pendingPlainText.get(record) || "") + text);
+    scheduleStreamFlush();
+  }
+
+  function appendReasoningBatched(record: ChatRecord, text: string) {
+    if (pendingPlainText.has(record)) flushRecordBuffers(record);
+    pendingReasoningText.set(
+      record,
+      (pendingReasoningText.get(record) || "") + text,
+    );
+    scheduleStreamFlush();
+  }
+
   const activeMessages = computed(() =>
     options.currentSessionId.value
       ? messagesBySession[options.currentSessionId.value] || []
@@ -614,10 +671,12 @@ export function useMessages(options: UseMessagesOptions) {
       })
       .catch((error) => {
         if (abort.signal.aborted) return;
+        flushRecordBuffers(botRecord);
         appendPlain(botRecord, `\n\n${String(error?.message || error)}`);
         console.error("SSE chat failed:", error);
       })
       .finally(async () => {
+        flushRecordBuffers(botRecord);
         delete activeConnections[sessionId];
         await options.onSessionsChanged?.();
       });
@@ -761,6 +820,7 @@ export function useMessages(options: UseMessagesOptions) {
       const connection = activeConnections[sessionId];
       if (connection?.transport === "websocket" && connection.botRecord) {
         connection.errorShown = true;
+        flushRecordBuffers(connection.botRecord);
         appendPlain(connection.botRecord, "\n\nWebSocket connection failed.");
       }
     };
@@ -779,6 +839,7 @@ export function useMessages(options: UseMessagesOptions) {
         !closingChatWebSockets.has(ws) &&
         connection.botRecord
       ) {
+        flushRecordBuffers(connection.botRecord);
         appendPlain(connection.botRecord, "\n\nWebSocket connection closed.");
       }
       delete activeConnections[sessionId];
@@ -885,6 +946,7 @@ export function useMessages(options: UseMessagesOptions) {
 
     if (msgType === "session_id" || msgType === "session_bound") return;
     if (msgType === "run_snapshot") {
+      flushRecordBuffers(botRecord);
       const snapshot = data && typeof data === "object" ? data : {};
       const snapshotRecord = normalizeHistoryRecord({
         id: `active-run-${snapshot.run_id || "unknown"}`,
@@ -926,11 +988,13 @@ export function useMessages(options: UseMessagesOptions) {
     }
     if (msgType === "error") {
       markMessageStarted(botRecord);
+      flushRecordBuffers(botRecord);
       appendPlain(botRecord, `\n\n${String(data)}`);
       return;
     }
     if (msgType === "complete" || msgType === "break") {
       markMessageStarted(botRecord);
+      flushRecordBuffers(botRecord);
       const finalText = payloadText(data);
       if (finalText && !hasPlainText(botRecord)) {
         appendPlain(botRecord, finalText, false);
@@ -939,29 +1003,39 @@ export function useMessages(options: UseMessagesOptions) {
     }
     if (msgType === "end") {
       markMessageStarted(botRecord);
+      flushRecordBuffers(botRecord);
       return;
     }
 
     if (msgType === "plain") {
       markMessageStarted(botRecord);
       if (chainType === "reasoning") {
-        appendReasoningPart(botRecord, payloadText(data));
+        appendReasoningBatched(botRecord, payloadText(data));
         return;
       }
       if (chainType === "tool_call") {
+        flushRecordBuffers(botRecord);
         upsertToolCall(botRecord, parseJsonSafe(data));
         return;
       }
       if (chainType === "tool_call_result") {
+        flushRecordBuffers(botRecord);
         finishToolCall(botRecord, parseJsonSafe(data));
         return;
       }
-      appendPlain(botRecord, payloadText(data), normalized.streaming !== false);
+      if (normalized.streaming === false) {
+        // 非流式（整段替换）：先冲刷缓冲再覆盖，保证内容完整
+        flushRecordBuffers(botRecord);
+        appendPlain(botRecord, payloadText(data), false);
+        return;
+      }
+      appendPlainBatched(botRecord, payloadText(data));
       return;
     }
 
     if (["image", "record", "file", "video"].includes(msgType)) {
       markMessageStarted(botRecord);
+      flushRecordBuffers(botRecord);
       const rawFilename = String(data)
         .replace("[IMAGE]", "")
         .replace("[RECORD]", "")

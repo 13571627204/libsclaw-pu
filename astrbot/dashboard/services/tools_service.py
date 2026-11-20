@@ -247,7 +247,7 @@ class ToolsService:
             logger.error(traceback.format_exc())
             raise ToolsServiceError(f"Failed to test MCP connection: {exc!s}") from exc
 
-    def get_tool_list(self) -> list[dict]:
+    async def get_tool_list(self) -> list[dict]:
         try:
             tools = list(self.tool_mgr.func_list)
             existing_names = {tool.name for tool in tools}
@@ -256,15 +256,29 @@ class ToolsService:
                     tools.append(tool)
 
             config_entries = self._get_config_entries()
+            # 一次性异步读取权限表，避免在循环中逐工具阻塞事件循环
+            perms_store = await sp.get_async(
+                "global",
+                "global",
+                "tool_permissions",
+                {},
+            )
+            perm_defaults = (
+                perms_store.get("_default", {}) if isinstance(perms_store, dict) else {}
+            )
+            if not isinstance(perm_defaults, dict):
+                perm_defaults = {}
             tools_dict = []
             for tool in tools:
-                tools_dict.append(self._serialize_tool(tool, config_entries))
+                tools_dict.append(
+                    self._serialize_tool(tool, config_entries, perm_defaults)
+                )
             return tools_dict
         except Exception as exc:
             logger.error(traceback.format_exc())
             raise ToolsServiceError(f"Failed to get tool list: {exc!s}") from exc
 
-    def update_tool_permission(self, data: Any) -> str:
+    async def update_tool_permission(self, data: Any) -> str:
         """Set a tool permission level.
 
         Args:
@@ -289,11 +303,11 @@ class ToolsService:
             if not self._tool_exists(tool_name):
                 raise ToolsServiceError(f"Tool '{tool_name}' not found")
 
-            perms_store = sp.get(
+            perms_store = await sp.get_async(
+                "global",
+                "global",
                 "tool_permissions",
                 {},
-                scope="global",
-                scope_id="global",
             )
             if not isinstance(perms_store, dict):
                 perms_store = {}
@@ -302,11 +316,11 @@ class ToolsService:
                 defaults = {}
             defaults[tool_name] = permission
             perms_store["_default"] = defaults
-            sp.put(
+            await sp.put_async(
+                "global",
+                "global",
                 "tool_permissions",
                 perms_store,
-                scope="global",
-                scope_id="global",
             )
 
             return f"Tool '{tool_name}' permission set to {permission}"
@@ -513,7 +527,12 @@ class ToolsService:
             )
         return config_entries
 
-    def _serialize_tool(self, tool, config_entries: list[dict]) -> dict:
+    def _serialize_tool(
+        self,
+        tool,
+        config_entries: list[dict],
+        perm_defaults: dict,
+    ) -> dict:
         readonly = False
         builtin_config_statuses = []
         builtin_config_tags = []
@@ -549,15 +568,7 @@ class ToolsService:
             "builtin_config_statuses": builtin_config_statuses,
             "builtin_config_tags": builtin_config_tags,
         }
-        perms_store = sp.get(
-            "tool_permissions",
-            {},
-            scope="global",
-            scope_id="global",
-        )
-        defaults = (
-            perms_store.get("_default", {}) if isinstance(perms_store, dict) else {}
-        )
+        defaults = perm_defaults
         configured = tool.name in defaults
         permission = defaults[tool.name] if configured else "member"
         tool_info["permission"] = permission

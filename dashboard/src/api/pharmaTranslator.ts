@@ -198,6 +198,7 @@ export interface PharmaTripleCard {
   violation_copy: string;
   disclaimer: string;
   citation_summary?: string;
+  citation_sources?: Array<{ key: string; title: string; labels: string[] }>;
   verdict_note?: string;
   expression_rule?: string;
   disposal?: string;
@@ -210,12 +211,19 @@ export interface PharmaLiteratureClaim {
   claim_type: "ingredients" | "efficacy" | "audience" | "endorsement";
   claim_type_label?: string;
   text: string;
+  product_name?: string;
   source_field?: string;
   source_label?: string;
   source_text?: string;
   source_type?: string;
   page_no?: number | null;
   citations: PharmaLiteratureCitation[];
+  source_coverage?: Partial<
+    Record<
+      "uploaded" | "knowledge_base",
+      { hit_count: number; labels: string[]; related_labels?: string[] }
+    >
+  >;
   matched_terms?: string[];
   evidence_level: "strong" | "weak" | "none";
   match_status?: "pending" | "matched";
@@ -1000,6 +1008,15 @@ export interface PharmaProjectSummary {
   updated_at: string;
 }
 
+export interface PharmaAuditEvent {
+  action?: string;
+  operator?: string;
+  time?: string;
+  comment?: string;
+  duration_ms?: number;
+  [key: string]: unknown;
+}
+
 export interface PharmaProject {
   project_id: string;
   product_name: string;
@@ -1071,7 +1088,7 @@ export interface PharmaProject {
   user_notes?: PharmaUserNote[];
   confirmed_at: string | null;
   confirmed_by: string | null;
-  audit_events: Array<Record<string, unknown>>;
+  audit_events: PharmaAuditEvent[];
 }
 
 interface Envelope<T> {
@@ -1145,7 +1162,7 @@ async function withProjectRecovery(
 // 后台内容任务：POST 立即返回，随后轮询状态（网络抖动继续轮询），不依赖长连接
 async function runContentJob(
   projectId: string,
-  kind: "rework" | "auto-fix",
+  kind: "rework" | "auto-fix" | "images-all",
   payload: object,
   maxWaitMs: number,
   label: string,
@@ -1217,6 +1234,10 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /**
+   * @deprecated 废弃接口：前端界面已不调用，字段/关键词确认统一走 workflowAction（/workflow/actions）。
+   * 仅为兼容旧客户端保留，新功能请勿使用。
+   */
   confirm(
     projectId: string,
     payload: {
@@ -1282,7 +1303,7 @@ export const pharmaTranslatorApi = {
     return apiV1Client.post<Envelope<PharmaProject>>(
       `/pharma-translator/projects/${projectId}/literature`,
       form,
-      { timeout: 150000 },
+      { timeout: 600000 },
     );
   },
 
@@ -1324,6 +1345,7 @@ export const pharmaTranslatorApi = {
     });
   },
 
+  /** @deprecated 废弃接口：用户声音导入功能已从界面移除，当前无任何页面调用。 */
   importUserVoices(
     projectId: string,
     voices: Array<{ text: string; source: string }>,
@@ -1334,6 +1356,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：用户声音删除功能已从界面移除，当前无任何页面调用。 */
   deleteUserVoice(projectId: string, voiceId: string) {
     return apiV1Client.delete<Envelope<PharmaProject>>(
       `/pharma-translator/projects/${projectId}/user-voices/${voiceId}`,
@@ -1399,6 +1422,11 @@ export const pharmaTranslatorApi = {
 
   autoFixContent(projectId: string) {
     return runContentJob(projectId, "auto-fix", {}, 240000, "一键修复");
+  },
+
+  /** 全项目批量配图：全局并发池后台任务，一次生成全部内容的配图 */
+  generateAllContentImages(projectId: string) {
+    return runContentJob(projectId, "images-all", {}, 480000, "全项目配图");
   },
 
   updateContentTopics(
@@ -1484,6 +1512,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：专家问询单创建入口已从界面移除（仅保留 answerComplianceTicket 答复能力），当前无页面调用。 */
   createComplianceTicket(
     projectId: string,
     payload: { question: string; riskIds?: string[] },
@@ -1505,6 +1534,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：合规 AI 问答入口已从界面移除，当前无任何页面调用。 */
   askComplianceAi(projectId: string, question: string) {
     return apiV1Client.post<Envelope<ComplianceAiAnswer>>(
       `/pharma-translator/projects/${projectId}/compliance/ai-ask`,
@@ -1534,6 +1564,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：发布状态回写功能已从界面移除，当前无任何页面调用。 */
   updatePublishStatus(
     projectId: string,
     updates: Array<{
@@ -1549,6 +1580,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：效果数据回传功能已从界面移除，当前无任何页面调用。 */
   recordPerformance(
     projectId: string,
     platform: string,
@@ -1567,6 +1599,7 @@ export const pharmaTranslatorApi = {
     );
   },
 
+  /** @deprecated 废弃接口：爆款内容库查询入口已从界面移除，当前无任何页面调用。 */
   contentHits() {
     return apiV1Client.get<
       Envelope<{ items: Array<PerformanceRecord & { product_name?: string; hook?: string }> }>

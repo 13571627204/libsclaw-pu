@@ -1,9 +1,10 @@
 import { ref, onBeforeUnmount } from 'vue';
 
+// cdn.jsdelivr.net 在国内经常被连接重置（ERR_CONNECTION_RESET），改用 gcore 镜像
 const ONNX_RUNTIME_URL =
-    'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js';
+    'https://gcore.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js';
 const VAD_RUNTIME_URL =
-    'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js';
+    'https://gcore.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js';
 
 let vadRuntimePromise: Promise<void> | null = null;
 
@@ -144,8 +145,8 @@ export function useVADRecording() {
                 minSpeechMs: 400,
                 submitUserSpeechOnPause: false,
                 model: 'v5',
-                baseAssetPath: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/',
-                onnxWASMBasePath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
+                baseAssetPath: 'https://gcore.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/',
+                onnxWASMBasePath: 'https://gcore.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/'
             });
 
             isInitialized.value = true;

@@ -303,23 +303,70 @@
               </v-card>
             </v-menu>
 
-            <v-list-item
-              class="styled-menu-item settings-menu-item"
-              rounded="md"
-              @click="toggleTheme"
+            <v-menu
+              location="end"
+              offset="8"
+              open-on-hover
+              :close-on-content-click="true"
             >
-              <template #prepend>
-                <Sun
-                  v-if="isDark"
-                  :size="18"
-                  class="styled-menu-lucide-icon"
-                />
-                <Moon v-else :size="18" class="styled-menu-lucide-icon" />
+              <template #activator="{ props: themeMenuProps }">
+                <v-list-item
+                  v-bind="themeMenuProps"
+                  class="styled-menu-item settings-menu-item"
+                  rounded="md"
+                >
+                  <template #prepend>
+                    <component
+                      :is="currentThemeModeIcon"
+                      :size="18"
+                      class="styled-menu-lucide-icon"
+                    />
+                  </template>
+                  <v-list-item-title>{{
+                    tm("modes.title")
+                  }}</v-list-item-title>
+                  <template #append>
+                    <span class="settings-menu-value">{{
+                      currentThemeModeLabel
+                    }}</span>
+                    <ChevronRight :size="18" class="styled-menu-lucide-icon" />
+                  </template>
+                </v-list-item>
               </template>
-              <v-list-item-title>{{
-                isDark ? tm("modes.lightMode") : tm("modes.darkMode")
-              }}</v-list-item-title>
-            </v-list-item>
+
+              <v-card class="styled-menu-card" elevation="8" rounded="lg">
+                <v-list density="compact" class="styled-menu-list pa-1">
+                  <v-list-item
+                    v-for="item in themeModeOptions"
+                    :key="item.value"
+                    class="styled-menu-item"
+                    :class="{
+                      'styled-menu-item-active': themeMode === item.value,
+                    }"
+                    rounded="md"
+                    @click="setThemeMode(item.value)"
+                  >
+                    <template #prepend>
+                      <component
+                        :is="item.icon"
+                        :size="18"
+                        class="styled-menu-lucide-icon"
+                      />
+                    </template>
+                    <v-list-item-title>{{
+                      tm(item.labelKey)
+                    }}</v-list-item-title>
+                    <template #append>
+                      <Check
+                        v-if="themeMode === item.value"
+                        :size="18"
+                        class="styled-menu-lucide-icon"
+                      />
+                    </template>
+                  </v-list-item>
+                </v-list>
+              </v-card>
+            </v-menu>
           </div>
         </StyledMenu>
       </div>
@@ -555,12 +602,12 @@ import {
   Check,
   ChevronRight,
   Languages,
-  Moon,
   PanelLeft,
   Pencil,
   Settings,
   SquarePen,
   Sun,
+  SunMoon,
   Trash2,
 } from "@lucide/vue";
 import { chatApi, providerApi } from "@/api/v1";
@@ -805,6 +852,29 @@ watch(transportMode, (mode) => {
 });
 
 const isDark = computed(() => customizer.uiTheme === "PurpleThemeDark");
+
+type ThemeMode = "light" | "dark" | "system";
+const themeMode = computed(() => customizer.themeMode);
+const themeModeOptions: Array<{
+  value: ThemeMode;
+  labelKey: string;
+  icon: typeof Sun;
+}> = [
+  { value: "system", labelKey: "modes.systemMode", icon: SunMoon },
+  { value: "light", labelKey: "modes.lightMode", icon: Sun },
+];
+const currentThemeModeLabel = computed(
+  () =>
+    tm(
+      themeModeOptions.find((item) => item.value === themeMode.value)
+        ?.labelKey || "modes.systemMode",
+    ) as string,
+);
+const currentThemeModeIcon = computed(
+  () =>
+    themeModeOptions.find((item) => item.value === themeMode.value)?.icon ||
+    SunMoon,
+);
 const canSend = computed(
   () =>
     Boolean(draft.value.trim() || stagedFiles.value.length) && !sending.value,
@@ -1662,8 +1732,8 @@ async function stopCurrentSession() {
   }
 }
 
-function toggleTheme() {
-  customizer.SET_UI_THEME(isDark.value ? "PurpleTheme" : "PurpleThemeDark");
+function setThemeMode(mode: ThemeMode) {
+  customizer.SET_THEME_MODE(mode);
 }
 </script>
 
@@ -1706,6 +1776,9 @@ function toggleTheme() {
   --chat-page-bg: rgb(var(--v-theme-background));
   --chat-border: rgba(255, 255, 255, 0.1);
   --chat-section-label: rgba(255, 255, 255, 0.5);
+  background:
+    radial-gradient(circle at 78% 8%, rgba(42, 143, 204, 0.14), transparent 28%),
+    linear-gradient(180deg, #20262b 0%, var(--chat-page-bg) 260px);
 }
 
 .chat-sidebar {
@@ -1750,6 +1823,11 @@ function toggleTheme() {
   border: 1px solid rgba(42, 143, 204, 0.12);
   border-radius: 16px;
   background: linear-gradient(135deg, #ffffff 0%, #eef8fe 100%);
+}
+
+.chat-ui.is-dark .chat-sidebar-brand {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(135deg, #33393f 0%, #2a3036 100%);
 }
 
 .chat-sidebar-brand.collapsed {
@@ -2212,6 +2290,17 @@ function toggleTheme() {
   color: #172635;
 }
 
+.chat-ui.is-dark .welcome-state {
+  border-color: rgba(42, 143, 204, 0.26);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(42, 143, 204, 0.16), transparent 46%),
+    rgba(36, 36, 36, 0.85);
+}
+
+.chat-ui.is-dark .welcome-title {
+  color: rgba(255, 255, 255, 0.92);
+}
+
 .welcome-subtitle {
   margin-top: 8px;
   color: var(--chat-muted);
@@ -2293,6 +2382,13 @@ function toggleTheme() {
   border: 1px solid rgba(42, 143, 204, 0.14) !important;
   background: rgba(255, 255, 255, 0.98) !important;
   box-shadow: 0 14px 36px rgba(22, 78, 112, 0.1) !important;
+}
+
+.chat-ui.is-dark .conversation-stack:not(.is-empty) .composer-shell :deep(.input-container),
+.chat-ui.is-dark .conversation-stack.is-empty .composer-shell :deep(.input-container) {
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  background: rgba(45, 45, 45, 0.96) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42) !important;
 }
 
 .composer-shell :deep(.input-area) {

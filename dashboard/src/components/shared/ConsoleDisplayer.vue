@@ -100,6 +100,7 @@ export default {
     }
   },
   async mounted() {
+    this.logKeySet = new Set();
     await this.fetchLogHistory();
     this.connectSSE();
     document.addEventListener('fullscreenchange', this.handleFullscreenChange);
@@ -206,29 +207,28 @@ export default {
       let hasUpdate = false;
 
       newLogs.forEach(log => {
+        // Set 去重（O(1)），避免批量历史日志时 some() 全扫描造成 O(n²)
+        const key = `${log.time}|${log.level}|${log.data}`;
+        if (this.logKeySet.has(key)) return;
 
-        const exists = this.localLogCache.some(existing => 
-          existing.time === log.time && 
-          existing.data === log.data &&
-          existing.level === log.level
-        );
-        
-        if (!exists) {
-            this.localLogCache.push(log);
-            hasUpdate = true;
-            
-            if (this.isLevelSelected(log.level)) {
-              this.printLog(log.data);
-            }
+        this.logKeySet.add(key);
+        this.localLogCache.push(log);
+        hasUpdate = true;
+
+        if (this.isLevelSelected(log.level)) {
+          this.printLog(log.data);
         }
       });
 
       if (hasUpdate) {
         this.localLogCache.sort((a, b) => a.time - b.time);
-        
+
         const maxSize = this.commonStore.log_cache_max_len || 200;
         if (this.localLogCache.length > maxSize) {
-           this.localLogCache.splice(0, this.localLogCache.length - maxSize);
+           const removed = this.localLogCache.splice(0, this.localLogCache.length - maxSize);
+           for (const r of removed) {
+             this.logKeySet.delete(`${r.time}|${r.level}|${r.data}`);
+           }
         }
       }
     },
@@ -339,9 +339,14 @@ export default {
       }
 
       span.style = style
-      span.classList.add('console-log-line', 'fade-in')
+      span.classList.add('console-log-line')
       this.appendLogContent(span, log);
       ele.appendChild(span)
+      // DOM 节点与缓存同上限，避免长时间运行后节点无限增长
+      const maxSize = this.commonStore.log_cache_max_len || 200;
+      while (ele.childElementCount > maxSize) {
+        ele.removeChild(ele.firstElementChild);
+      }
       if (this.autoScroll) {
         ele.scrollTop = ele.scrollHeight
       }
@@ -512,20 +517,6 @@ export default {
   :deep(.console-log-prefix:empty),
   :deep(.console-log-level:empty) {
     display: none;
-  }
-}
-
-:deep(.fade-in) {
-  animation: fadeIn 0.3s;
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
   }
 }
 </style>

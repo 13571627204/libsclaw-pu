@@ -421,30 +421,37 @@ async function loadWelcomeAnnouncement() {
 onMounted(async () => {
   await loadWelcomeAnnouncement();
 
-  try {
-    await loadPlatformConfigBase();
-    if ((platformConfigData.value.platform || []).length > 0) {
-      platformStepState.value = 'completed';
-    }
-  } catch (e) {
-    console.error(e);
-  }
-
-  try {
-    const providers = await fetchChatProviders();
-    if (providers.length > 0) {
-      providerStepState.value = 'completed';
-    }
-  } catch (e) {
-    console.error(e);
-  }
-
-  try {
-    const defaultConfig = await fetchDefaultConfig();
-    syncComputerAccessRuntime(defaultConfig);
-  } catch (e) {
-    console.error(e);
-  }
+  // 三个请求相互独立，并行发起以缩短首屏就绪时间
+  await Promise.all([
+    (async () => {
+      try {
+        await loadPlatformConfigBase();
+        if ((platformConfigData.value.platform || []).length > 0) {
+          platformStepState.value = 'completed';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    })(),
+    (async () => {
+      try {
+        const providers = await fetchChatProviders();
+        if (providers.length > 0) {
+          providerStepState.value = 'completed';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    })(),
+    (async () => {
+      try {
+        const defaultConfig = await fetchDefaultConfig();
+        syncComputerAccessRuntime(defaultConfig);
+      } catch (e) {
+        console.error(e);
+      }
+    })(),
+  ]);
 });
 
 async function openPlatformDialog() {

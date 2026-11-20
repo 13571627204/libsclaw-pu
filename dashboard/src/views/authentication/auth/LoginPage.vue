@@ -30,7 +30,6 @@ const logoTitle = computed(() => {
 
 const themeOptions = [
   { mode: 'light'  as const, icon: 'mdi-white-balance-sunny', labelKey: 'theme.light'  },
-  { mode: 'dark'   as const, icon: 'mdi-weather-night',       labelKey: 'theme.dark'   },
   { mode: 'system' as const, icon: 'mdi-sync',                labelKey: 'theme.system' },
 ] as const;
 
@@ -40,7 +39,6 @@ function setThemeMode(mode: 'light' | 'dark' | 'system') {
 }
 
 const currentThemeIcon = computed(() => {
-  if (customizer.themeMode === 'dark') return 'mdi-weather-night';
   if (customizer.themeMode === 'system') return 'mdi-sync';
   return 'mdi-white-balance-sunny';
 });

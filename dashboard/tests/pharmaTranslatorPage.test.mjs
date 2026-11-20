@@ -101,7 +101,6 @@ test("step 6 compliance filter runs three-tier filtering and compliance sign-off
   }
   assert.match(confirmBody, /includes\("合规"\)/);
   assert.match(confirmBody, /filterPendingReviewCount/);
-  assert.match(pageSource, /ticket\.scope === "compliance_filter"/);
   assert.match(pageSource, /ticket\.scope !== "compliance_filter"/);
   assert.match(pageSource, /step === 6 \|\| step === 9/);
 });

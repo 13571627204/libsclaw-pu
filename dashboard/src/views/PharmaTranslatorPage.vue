@@ -87,7 +87,24 @@
       </button>
     </nav>
 
-    <section class="workspace-grid">
+    <div class="history-heading-actions workspace-actions">
+      <v-btn
+        color="primary"
+        variant="tonal"
+        prepend-icon="mdi-plus"
+        @click="startNewProject"
+        >新增项目</v-btn
+      >
+      <v-btn
+        icon="mdi-refresh"
+        variant="text"
+        aria-label="刷新最近项目"
+        :loading="loadingHistory"
+        @click="loadHistory"
+      />
+    </div>
+
+    <section v-if="!project || currentStep === 1" class="workspace-grid">
       <v-card class="surface-card upload-card" variant="flat">
         <div class="section-heading">
           <div>
@@ -252,6 +269,53 @@
           </div>
         </div>
       </div>
+
+      <nav class="result-step-nav" aria-label="步骤导航">
+        <button
+          type="button"
+          class="result-step-nav-arrow"
+          :disabled="!canVisitStep(activeStep - 1)"
+          aria-label="上一步"
+          title="上一步"
+          @click="selectStep(activeStep - 1)"
+        >
+          <v-icon icon="mdi-chevron-left" size="18" />
+          <span>上一步</span>
+        </button>
+        <div class="result-step-nav-items">
+          <button
+            v-for="(step, index) in visibleWorkflowSteps"
+            :key="step.step"
+            type="button"
+            :class="[
+              'result-step-nav-item',
+              {
+                active: activeStep === step.step,
+                done: isStepDone(step.step),
+                locked: !canVisitStep(step.step),
+              },
+            ]"
+            :disabled="!canVisitStep(step.step)"
+            @click="selectStep(step.step)"
+          >
+            <span class="result-step-nav-no">{{
+              isStepDone(step.step) ? "✓" : index + 1
+            }}</span>
+            <span class="result-step-nav-title">{{ step.title }}</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          class="result-step-nav-arrow"
+          :disabled="!canVisitStep(activeStep + 1)"
+          aria-label="下一步"
+          title="下一步"
+          @click="selectStep(activeStep + 1)"
+        >
+          <span>下一步</span>
+          <v-icon icon="mdi-chevron-right" size="18" />
+        </button>
+      </nav>
 
       <v-alert
         v-if="isTerminated"
@@ -493,16 +557,53 @@
                 全文、所选本地药企知识库与搜索采集内容，由已配置的生成模型整理品牌名和产品名、主治功能、成分、批号、对症人群、现有渠道（医院、药店、诊所、药品零售商、药品批发商）。模型本身不联网、不凭记忆补写；每条候选附来源，须人工确认，不从禁忌推断适用人群。
               </p>
             </div>
-            <v-btn
-              color="primary"
-              variant="tonal"
-              :loading="dimensionsLoading"
-              :disabled="readOnly || currentStep !== 2 || actionLoading"
-              @click="generateDimensions"
-            >
-              按药品名称检索并生成多维
-            </v-btn>
+            <div class="d-flex ga-2 flex-wrap">
+              <v-btn
+                variant="outlined"
+                color="primary"
+                prepend-icon="mdi-face-agent"
+                :disabled="readOnly || currentStep !== 2"
+                @click="openDimensionService"
+              >
+                人工客服
+              </v-btn>
+              <v-btn
+                color="primary"
+                variant="tonal"
+                :loading="dimensionsLoading"
+                :disabled="readOnly || currentStep !== 2 || actionLoading"
+                @click="onRegenerateDimensionsClick"
+              >
+                按药品名称检索并生成多维
+              </v-btn>
+            </div>
           </div>
+          <v-dialog v-model="dimensionServiceDialog" max-width="360">
+            <v-card>
+              <v-card-title class="d-flex align-center">
+                人工客服
+                <v-spacer />
+                <v-btn
+                  icon="mdi-close"
+                  size="small"
+                  variant="text"
+                  aria-label="关闭"
+                  @click="dimensionServiceDialog = false"
+                />
+              </v-card-title>
+              <v-card-text class="text-center">
+                <p v-if="!dimensionRegenUnlocked" class="mb-2 text-warning">
+                  多维内容已自动生成。如需重新生成，请先添加客服微信，并点击“人工客服”按钮后再操作。
+                </p>
+                <img
+                  :src="customerServiceQr"
+                  alt="客服二维码"
+                  style="width: 100%; max-width: 280px"
+                />
+                <p class="mt-2">微信扫码添加客服，获取人工服务</p>
+              </v-card-text>
+            </v-card>
+          </v-dialog>
           <div class="dimension-source-bar">
             <v-select
               v-model="dimensionKbIds"
@@ -567,6 +668,9 @@
             <span class="dimension-progress">
               已确认 {{ confirmedReviewCount }}/{{ reviewItemTotal }}
               条（含安全约束）
+              <small v-if="completionMeta(dimensionGeneration?.generated_at, 'generate_dimensions')">
+                · {{ completionMeta(dimensionGeneration?.generated_at, "generate_dimensions") }}
+              </small>
             </span>
             <v-btn
               size="small"
@@ -756,7 +860,7 @@
 
           <div class="literature-sources">
             <section class="literature-upload">
-              <h4>企业文献库（PDF / DOCX）</h4>
+              <h4>企业文献库（单份 ≤ 128 MB）</h4>
               <div class="upload-row">
                 <v-select
                   v-model="literatureDocKind"
@@ -766,27 +870,38 @@
                   variant="outlined"
                   hide-details
                   class="doc-kind-select"
+                  :disabled="readOnly || currentStep !== 3 || literatureSourcesLocked"
                 />
                 <v-file-input
                   v-model="literatureFiles"
                   label="选择文献文件（可多选）"
                   multiple
+                  chips
+                  counter
+                  show-size
                   density="compact"
                   variant="outlined"
                   hide-details
                   prepend-icon="mdi-file-upload-outline"
-                  accept=".pdf,.docx"
+                  accept=".txt,.md,.markdown,.rst,.adoc,.pdf,.docx,.epub,.xls,.xlsx,.pptx"
+                  :disabled="readOnly || currentStep !== 3 || literatureSourcesLocked"
                 />
                 <v-btn
                   variant="tonal"
                   :loading="literatureUploading"
                   :disabled="
-                    readOnly || currentStep !== 3 || !literatureFiles.length
+                    readOnly ||
+                    currentStep !== 3 ||
+                    literatureSourcesLocked ||
+                    !literatureFiles.length
                   "
                   @click="uploadLiterature"
                   >上传文献</v-btn
                 >
               </div>
+              <p class="text-caption text-medium-emphasis mt-1 mb-0">
+                支持的格式:  pdf, docx, md , pptx；最大文件大小: 128MB
+              </p>
               <div
                 v-if="literatureDocuments.length"
                 class="literature-doc-list"
@@ -803,7 +918,7 @@
                       >{{ doc.doc_kind_label || doc.doc_kind }} ·
                       {{ doc.chunk_count || 0 }} 个切片 ·
                       {{
-                        doc.uploaded_at ? formatDate(doc.uploaded_at) : ""
+                        doc.uploaded_at ? formatDateTime(doc.uploaded_at) : ""
                       }}</small
                     >
                   </div>
@@ -812,13 +927,13 @@
                     size="x-small"
                     variant="text"
                     color="error"
-                    :disabled="readOnly || currentStep !== 3"
+                    :disabled="readOnly || currentStep !== 3 || literatureSourcesLocked"
                     @click="removeLiterature(doc.doc_id)"
                   />
                 </article>
               </div>
               <p v-else class="literature-hint">
-                未上传文献时仅使用说明书原文验证；成分、背书类卖点可能被评为弱证据。
+                可不上传企业文献，直接开始匹配：将使用说明书原文（及可用知识库）验证；成分、背书类卖点可能被评为弱证据。
               </p>
             </section>
             <section class="literature-kb">
@@ -835,7 +950,7 @@
                 variant="outlined"
                 hide-details
                 :loading="kbLoading"
-                :disabled="readOnly || currentStep !== 3"
+                :disabled="readOnly || currentStep !== 3 || literatureSourcesLocked"
               />
             </section>
           </div>
@@ -856,12 +971,19 @@
               prepend-icon="mdi-book-search-outline"
               :loading="literatureMatching"
               :disabled="
-                readOnly || currentStep !== 3 || !literatureClaims.length
+                readOnly ||
+                currentStep !== 3 ||
+                !literatureClaims.length
               "
               @click="runLiteratureMatch"
             >
               {{ literatureMatched ? "重新执行文献匹配" : "开始文献匹配" }}
             </v-btn>
+            <span
+              v-if="!readOnly && currentStep === 3 && literatureSourcesLocked"
+              class="text-caption text-medium-emphasis"
+              >已开始文献匹配，企业文献与本地知识库来源已锁定</span
+            >
           </div>
           <v-alert
             v-if="literature.ai_notice"
@@ -894,7 +1016,7 @@
             已复用同 SKU 历史验证（签字：{{
               literature.reused_from.signer || "-"
             }}<template v-if="literature.reused_from.signed_at">
-              · {{ formatDate(literature.reused_from.signed_at) }}</template
+              · {{ formatDateTime(literature.reused_from.signed_at) }}</template
             >），请逐条复核后重新签字确认。
           </v-alert>
           <div v-if="literature.knowledge_graph?.length" class="unusable-box">
@@ -937,7 +1059,7 @@
               </h5>
               <ul>
                 <li v-for="item in group.items" :key="`group-${item.claim_id}`">
-                  <b>{{ item.claim_no }}</b> {{ item.text }}
+                  <b>{{ item.claim_no }}</b> {{ literatureClaimDisplayText(item) }}
                   <v-chip
                     v-if="literatureMatched"
                     :color="evidenceColor(effectiveLevel(item))"
@@ -955,25 +1077,64 @@
             class="literature-summary"
           >
             <h4>文献匹配与三色标签</h4>
+            <small v-if="completionMeta(literature.matched_at, 'run_literature_match')">
+              {{ completionMeta(literature.matched_at, "run_literature_match") }}
+            </small>
             <table class="literature-summary-table">
               <thead>
                 <tr>
-                  <th>编号</th>
-                  <th>卖点</th>
-                  <th>文献来源</th>
-                  <th>证据等级</th>
-                  <th>判定说明</th>
+                  <th class="col-no">编号</th>
+                  <th class="col-claim">卖点</th>
+                  <th class="col-source">文献来源</th>
+                  <th class="col-level">证据等级</th>
+                  <th class="col-note">判定说明</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
                   v-for="claim in literatureClaims"
                   :key="`summary-${claim.claim_id}`"
+                  :class="`level-row-${effectiveLevel(claim)}`"
                 >
-                  <td class="nowrap">{{ claim.claim_no }}</td>
-                  <td>{{ claim.text }}</td>
-                  <td>
-                    {{ claim.triple_card?.citation_summary || "无文献来源" }}
+                  <td class="nowrap claim-no-cell">{{ claim.claim_no }}</td>
+                  <td class="claim-text-cell">{{ literatureClaimDisplayText(claim) }}</td>
+                  <td class="summary-source-cell">
+                    <div
+                      v-for="group in claimSourceSummary(claim)"
+                      :key="group.key"
+                      :class="[
+                        'summary-source-group',
+                        `channel-${group.key}`,
+                        {
+                          'is-miss': !group.labels.length && !group.related.length,
+                          'is-related': !group.labels.length && group.related.length,
+                        },
+                      ]"
+                    >
+                      <div class="summary-source-title">
+                        {{ group.title }}
+                        <span v-if="group.labels.length" class="summary-source-count"
+                          >命中 {{ group.labels.length }}</span
+                        >
+                        <span
+                          v-else-if="group.related.length"
+                          class="summary-source-count related"
+                          >相关参考 · 未达证据阈值</span
+                        >
+                        <span v-else class="summary-source-count miss">未命中</span>
+                      </div>
+                      <ul
+                        v-if="group.labels.length || group.related.length"
+                        class="summary-source-items"
+                      >
+                        <li
+                          v-for="label in group.labels.length ? group.labels : group.related"
+                          :key="label"
+                        >
+                          {{ label }}
+                        </li>
+                      </ul>
+                    </div>
                   </td>
                   <td class="nowrap">
                     <v-chip
@@ -983,11 +1144,11 @@
                       >{{ evidenceLabel(effectiveLevel(claim)) }}</v-chip
                     >
                   </td>
-                  <td>
-                    {{ claim.verdict_note || "-"
-                    }}<template v-if="claim.disposal"
-                      >；{{ claim.disposal }}</template
-                    >
+                  <td class="claim-note-cell">
+                    <div>{{ claim.verdict_note || "-" }}</div>
+                    <div v-if="claim.disposal" class="claim-disposal">
+                      {{ claim.disposal }}
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -1016,7 +1177,8 @@
             >
               <header>
                 <div>
-                  <strong>{{ claim.claim_no }} · {{ claim.text }}</strong
+                  <strong
+                    >{{ claim.claim_no }} · {{ literatureClaimDisplayText(claim) }}</strong
                   ><small
                     >{{ claimTypeIcon(claim.claim_type) }}
                     {{ claim.claim_type_label || claim.claim_type }} · Claim
@@ -1063,8 +1225,20 @@
                 </div>
               </div>
               <div v-if="claim.citations?.length" class="citation-list">
+                <section
+                  v-for="group in claimCitationGroups(claim)"
+                  :key="group.key"
+                  class="citation-group"
+                >
+                  <h6>
+                    <v-icon :icon="citationIcon(group.key)" size="16" />
+                    {{ group.title }}（{{ group.items.length }}）
+                  </h6>
+                  <p v-if="!group.items.length" class="citation-miss">
+                    {{ group.missText }}
+                  </p>
                 <div
-                  v-for="citation in claim.citations"
+                  v-for="citation in group.items"
                   :key="citation.citation_id"
                   class="claim-evidence"
                 >
@@ -1094,6 +1268,7 @@
                     >
                   </div>
                 </div>
+                </section>
               </div>
               <v-alert
                 v-else-if="claim.match_status === 'matched'"
@@ -1192,9 +1367,29 @@
                       </template>
                       <dt>文献来源</dt>
                       <dd>
-                        {{ claim.triple_card.citation_summary || "无文献来源" }}
+                        <div
+                          v-if="tripleCardSources(claim).length"
+                          class="triple-source-list"
+                        >
+                          <div
+                            v-for="source in tripleCardSources(claim)"
+                            :key="source.key"
+                            :class="[
+                              'triple-source-row',
+                              `channel-${source.key}`,
+                            ]"
+                          >
+                            <span class="triple-source-title">{{
+                              source.title
+                            }}</span>
+                            <span class="triple-source-labels">{{
+                              source.labels.join(" + ")
+                            }}</span>
+                          </div>
+                        </div>
+                        <template v-else>无文献来源</template>
                       </dd>
-                      <dt>文献证据</dt>
+                      <dt>可用场景</dt>
                       <dd>{{ claim.triple_card.usable_scenes.join("、") }}</dd>
                       <dt>禁用场景</dt>
                       <dd>{{ claim.triple_card.blocked_scenes.join("、") }}</dd>
@@ -1294,7 +1489,7 @@
               >已签字确认：{{ literatureSignoff.signer_name }}（{{
                 literatureSignoff.signer_title
               }}）<template v-if="literatureSignoff.signed_at">
-                · {{ formatDate(literatureSignoff.signed_at) }}</template
+                · {{ formatDateTime(literatureSignoff.signed_at) }}</template
               >
               · 可用 {{ literatureSignoff.accepted_count ?? 0 }} 条 / 卡断
               {{ literatureSignoff.blocked_count ?? 0 }} 条</span
@@ -1335,16 +1530,25 @@
                 variant="outlined"
                 hide-details
               />
-              <v-text-field
-                v-model="literatureSigner.title"
-                label="部门 / 职务（须含 医学部 或 学术部）"
-                density="compact"
-                variant="outlined"
-                hide-details
-                :error="
-                  !!literatureSigner.title.trim() && !literatureSignerQualified
-                "
-              />
+              <div class="literature-department-picker">
+                <span>部门</span>
+                <div class="literature-department-options">
+                  <v-btn
+                    v-for="department in literatureDepartmentOptions"
+                    :key="department"
+                    size="small"
+                    :variant="
+                      literatureSigner.title === department ? 'flat' : 'outlined'
+                    "
+                    :color="
+                      literatureSigner.title === department ? 'primary' : undefined
+                    "
+                    @click="selectLiteratureDepartment(department)"
+                  >
+                    {{ department }}
+                  </v-btn>
+                </div>
+              </div>
             </div>
             <p
               v-if="literatureSigner.title.trim() && !literatureSignerQualified"
@@ -1418,7 +1622,7 @@
                     ><template v-if="item.signer">
                       · 签字：{{ item.signer }}</template
                     ><template v-if="item.archived_at">
-                      · {{ formatDate(item.archived_at) }}</template
+                      · {{ formatDateTime(item.archived_at) }}</template
                     ></small
                   >
                 </div>
@@ -1565,20 +1769,17 @@
             v-if="scenes.length && !readOnly && currentStep === 4"
             class="scene-toolbar"
           >
-            <small
-              >已选 {{ selectedSceneCount }}/5 个重点场景（确认提交限 1—5
-              个，可逐张单选）</small
-            >
-            <v-btn
+            <div>
+              <strong>已选 {{ selectedSceneCount }}/5 个重点场景</strong>
+              <small>已默认勾选推荐优先级最高的场景，可逐张调整，确认提交最多 6 个</small>
+            </div>
+            <v-chip
               size="small"
+              :color="selectedSceneCount === MAX_SELECTED_SCENES ? 'warning' : 'primary'"
               variant="tonal"
-              color="primary"
-              prepend-icon="mdi-checkbox-multiple-marked-outline"
-              :disabled="!selectableScenes.length"
-              @click="toggleAllScenesSelected"
             >
-              {{ allScenesSelected ? "取消全选（逐张单选）" : "一键全选" }}
-            </v-btn>
+              {{ selectedSceneCount === MAX_SELECTED_SCENES ? "已达上限" : `还可选 ${MAX_SELECTED_SCENES - selectedSceneCount} 个` }}
+            </v-chip>
           </div>
           <div v-if="scenes.length" class="scene-grid">
             <article
@@ -1592,7 +1793,12 @@
               <header>
                 <v-checkbox
                   v-model="scene.selected"
-                  :disabled="readOnly || currentStep !== 4 || scene.deleted"
+                  :disabled="
+                    readOnly ||
+                    currentStep !== 4 ||
+                    scene.deleted ||
+                    (!scene.selected && selectedSceneCount >= MAX_SELECTED_SCENES)
+                  "
                   hide-details
                   color="primary"
                   @update:model-value="onSceneCheckboxChange"
@@ -1604,6 +1810,21 @@
                     {{ Math.round(scene.evidence_coverage * 100) }}%
                   </small>
                 </div>
+                <v-chip
+                  v-if="sceneRecommendationPriority(scene.scene_id)"
+                  size="x-small"
+                  variant="tonal"
+                  :color="
+                    sceneRecommendationPriority(scene.scene_id) === 'P0'
+                      ? 'error'
+                      : sceneRecommendationPriority(scene.scene_id) === 'P1'
+                      ? 'warning'
+                      : 'default'
+                  "
+                >
+                  {{ sceneRecommendationPriority(scene.scene_id) }}
+                  {{ priorityTierText(sceneRecommendationPriority(scene.scene_id)) }}
+                </v-chip>
                 <v-btn
                   v-if="!readOnly && currentStep === 4"
                   size="x-small"
@@ -1751,7 +1972,7 @@
                 readOnly ||
                 currentStep !== 4 ||
                 selectedSceneCount < 1 ||
-                selectedSceneCount > 5
+                selectedSceneCount > MAX_SELECTED_SCENES
               "
               @click="confirmScenes"
             >
@@ -1797,13 +2018,20 @@
             RX 产品仅做竞品研究参考，分析结果不会用于大众平台投放。
           </v-alert>
           <section class="competitor-form">
+            <v-checkbox
+              v-model="competitorAutoRun"
+              label="进入竞品扫描后自动采集并分析"
+              color="primary"
+              density="compact"
+              hide-details
+            />
             <div class="step-actions">
               <v-btn
                 color="primary"
                 variant="tonal"
                 :loading="competitorScanning"
                 :disabled="readOnly || currentStep !== 5 || competitorAnalyzing"
-                @click="scanCompetitors"
+                @click="handleCompetitorScan"
               >
                 {{ competitor?.items?.length ? "补采" : "开始实时采集" }}
               </v-btn>
@@ -1842,7 +2070,7 @@
             <h4>采集记录</h4>
             <ul class="competitor-list">
               <li v-for="scan in competitor.scans" :key="scan.scan_id">
-                {{ scan.time }} · {{ scan.mode_label }} ·
+                {{ formatDateTime(scan.time) }} · {{ scan.mode_label }} ·
                 {{
                   scan.platforms.map(competitorPlatformLabel).join("、") ||
                   "公开链接"
@@ -1926,9 +2154,7 @@
               <h3>
                 竞品内容扫描
                 <span class="competitor-report-date"
-                  >{{
-                    (competitor.analyzed_at || "").slice(0, 10)
-                  }}
+                  >{{ formatDateTime(competitor.analyzed_at) }}
                   实时采集</span
                 >
               </h3>
@@ -1939,8 +2165,7 @@
                 采集方式：{{ competitorCollectionSummary }}
               </p>
               <p class="competitor-report-meta">
-                分析模型：{{ competitor.provider_label || "已配置模型" }} ·
-                {{ competitor.analyzed_at }}
+                {{ completionMeta(competitor.analyzed_at, "analyze_competitors") }}
               </p>
             </div>
             <v-alert
@@ -2002,26 +2227,33 @@
                   {{ competitorPlatformLabel(platform) }}
                 </v-chip>
               </div>
-              <div class="step-actions mt-2">
+              <div
+                v-if="!competitorSupplementCompleted"
+                class="step-actions mt-2"
+              >
                 <v-btn
                   size="small"
                   variant="tonal"
+                  :loading="competitorAutoRunning"
                   :disabled="
                     readOnly ||
                     currentStep !== 5 ||
                     competitorScanning ||
                     competitorAnalyzing
                   "
-                  @click="applySampleSuggestions(false)"
+                  @click="applySampleSuggestions(true)"
                 >
                   填入补采参数
                 </v-btn>
                 <v-btn
                   size="small"
                   color="primary"
-                  :loading="competitorScanning"
+                  :loading="competitorAutoRunning"
                   :disabled="
-                    readOnly || currentStep !== 5 || competitorAnalyzing
+                    readOnly ||
+                    currentStep !== 5 ||
+                    competitorScanning ||
+                    competitorAnalyzing
                   "
                   @click="applySampleSuggestions(true)"
                 >
@@ -2746,7 +2978,7 @@
                 </div>
               </header>
               <small
-                >初筛时间：{{ formatDateTime(complianceFilter.scanned_at) }}
+                >{{ completionMeta(complianceFilter.scanned_at, "run_compliance_filter") }}
                 <template v-if="complianceFilter.basis">
                   · 依据：{{ complianceFilter.basis }}</template
                 ></small
@@ -2880,7 +3112,7 @@
                 density="compact"
                 class="ui-hidden"
               >
-                {{ complianceFilter.ai_review.notice }}
+                {{ maskModelLabel(complianceFilter.ai_review.notice) }}
                 <template v-if="complianceFilter.ai_review.kb_warning">
                   （{{ complianceFilter.ai_review.kb_warning }}）</template
                 >
@@ -3086,27 +3318,39 @@
                 </div>
               </div>
               <div class="zr-confirm-checks">
-                <b>确认内容（合规部须逐项勾选）</b>
+                <b>确认内容（合规部确认项）</b>
                 <div class="zr-confirm-checks-grid">
-                  <v-checkbox
+                  <v-chip
                     v-for="item in ZR_CONFIRM_CHECKS"
                     :key="item.value"
-                    v-model="filterConfirmChecks"
-                    :value="item.value"
-                    :label="item.label"
-                    density="compact"
-                    hide-details
-                    color="primary"
-                    :disabled="!canEditFilter"
-                  />
+                    size="small"
+                    :color="
+                      filterConfirmChecks.includes(item.value)
+                        ? 'success'
+                        : undefined
+                    "
+                    :variant="
+                      filterConfirmChecks.includes(item.value)
+                        ? 'tonal'
+                        : 'outlined'
+                    "
+                    :prepend-icon="
+                      filterConfirmChecks.includes(item.value)
+                        ? 'mdi-check-circle'
+                        : 'mdi-checkbox-blank-circle-outline'
+                    "
+                  >
+                    {{ item.label }}
+                  </v-chip>
                 </div>
-                <small
-                  v-if="!filterConfirmChecksComplete"
-                  class="zr-confirm-hint"
-                  >尚有
-                  {{ ZR_CONFIRM_CHECKS.length - filterConfirmChecks.length }}
-                  项未勾选，全部确认后方可签字提交。</small
-                >
+                <div class="zr-confirm-actions">
+                  <small v-if="!filterConfirmChecksComplete" class="zr-confirm-hint"
+                    >点击“确定”自动勾选全部确认项，并采纳全部谨慎/替换项复核建议。</small
+                  >
+                  <small v-else class="zr-confirm-hint zr-confirm-hint--done"
+                    >已全部确认，可签字提交。</small
+                  >
+                </div>
               </div>
               <div class="compliance-sign-form">
                 <v-text-field
@@ -3126,30 +3370,18 @@
                   hide-details
                   :disabled="!canEditFilter"
                 />
-                <v-text-field
-                  v-model="filterAuthority"
-                  label="广审受理机关"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  :disabled="!canEditFilter"
-                />
-                <v-text-field
-                  v-model="filterAdNote"
-                  label="广审排期备注"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  :disabled="!canEditFilter"
-                />
-                <v-text-field
-                  v-model="filterComment"
-                  label="确认意见（写入审计记录）"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  :disabled="!canEditFilter"
-                />
+                <v-btn
+                  color="primary"
+                  size="small"
+                  prepend-icon="mdi-check-all"
+                  class="zr-confirm-btn"
+                  :disabled="
+                    !canEditFilter ||
+                    (filterConfirmChecksComplete && !filterPendingReviewCount)
+                  "
+                  @click="selectComplianceFilterChecks"
+                  >确定（一键确认全部）</v-btn
+                >
               </div>
             </template>
           </section>
@@ -3165,8 +3397,7 @@
                 !canEditFilter ||
                 !filterScanned ||
                 filterInventoryDirty ||
-                Boolean(filterRecord) ||
-                !filterConfirmChecksComplete
+                Boolean(filterRecord)
               "
               @click="confirmComplianceFilter"
             >
@@ -3252,7 +3483,7 @@
                     {{ keyword.platform || "—"
                     }}<small class="table-subtext">{{
                       keyword.observed_at
-                        ? formatDate(keyword.observed_at)
+                        ? formatDateTime(keyword.observed_at)
                         : "无观测时间"
                     }}</small>
                   </td>
@@ -3537,8 +3768,7 @@
                 条内容，覆盖一个月分发量。全量内容在选题矩阵确认后按勾选与排期分发。
               </blockquote>
               <p class="competitor-meta">
-                分析模型：{{ contentBatch.provider_label }} ·
-                {{ contentBatch.generated_at }} · 渠道
+                {{ completionMeta(contentBatch.generated_at, "generate_content_batch") }} · 渠道
                 {{ contentBatch.channels.join("、") }}
               </p>
             </header>
@@ -3624,7 +3854,7 @@
                   contentBatch.topic_count
                 }}
                 条<template v-if="contentBatch.topics_scheduled_at"
-                  >（上次保存 {{ contentBatch.topics_scheduled_at }}）</template
+                  >（上次保存 {{ formatDateTime(contentBatch.topics_scheduled_at) }}）</template
                 >
               </span>
               <v-btn
@@ -3645,10 +3875,28 @@
                   <span class="batch-section-no">6.2</span>
                   完整示范内容 {{ batchSampleContents.length }} 条
                 </h4>
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="secondary"
+                  prepend-icon="mdi-image-multiple"
+                  :disabled="
+                    !canRegenerateContentImages ||
+                    batchGenerating ||
+                    Boolean(imageLoading) ||
+                    allImagesLoading
+                  "
+                  :loading="allImagesLoading"
+                  @click="generateAllImages"
+                  >一键生成全部配图（全局并发，约 3–6 分钟）</v-btn
+                >
               </div>
               <p class="competitor-meta">
                 配图按每条素材清单逐张生成，画幅：小红书/抖音 3:4 · 视频号封面
                 6:7 · 公众号头图 2.35:1。
+                <template v-if="completionMeta(null, 'generate_content_images')">
+                  {{ completionMeta(null, "generate_content_images") }}
+                </template>
               </p>
               <div
                 v-for="sample in batchSampleContents"
@@ -3712,7 +3960,11 @@
                     }}
                   </p>
                 </blockquote>
-                <div v-if="sample.images?.length" class="content-image-grid">
+                <!-- 示范内容配图与分平台内容一致的 3 列网格排版，每张可单独重生/放大/下载 -->
+                <div
+                  v-if="sample.images?.length"
+                  class="content-image-grid content-image-grid--current"
+                >
                   <figure
                     v-for="image in sample.images"
                     :key="`demo-${image.filename}`"
@@ -3729,9 +3981,7 @@
                         )
                       "
                       class="content-image-clickable"
-                      @click="
-                        openImagePreview(imageUrls[image.filename], image.asset)
-                      "
+                      @click="openImagePreview(sample, image)"
                     />
                     <div
                       v-else
@@ -3749,6 +3999,7 @@
                         图{{ image.index }}（{{
                           image.aspect || channelAspect(sample.channel)
                         }}）：{{ image.asset }}
+                        <small v-if="image.model">（{{ image.model }}）</small>
                       </span>
                       <div class="content-image-actions">
                       <v-btn
@@ -3769,12 +4020,7 @@
                         icon="mdi-magnify-plus-outline"
                         :aria-label="`放大图${image.index}`"
                         title="放大查看"
-                        @click="
-                          openImagePreview(
-                            imageUrls[image.filename],
-                            image.asset,
-                          )
-                        "
+                        @click="openImagePreview(sample, image)"
                       />
                       <v-btn
                         v-if="imageUrls[image.filename]"
@@ -3787,6 +4033,39 @@
                         title="下载图片"
                       />
                       </div>
+                    </figcaption>
+                  </figure>
+                </div>
+                <!-- 生成中按素材清单渲染占位网格，排版与生成完成后的图片网格一致 -->
+                <div
+                  v-else-if="
+                    imageLoading === sample.content_id && sample.assets?.length
+                  "
+                  class="content-image-grid content-image-grid--current"
+                >
+                  <figure
+                    v-for="(asset, assetIndex) in sample.assets.slice(0, 8)"
+                    :key="`demo-pending-${sample.content_id}-${assetIndex}`"
+                    class="content-image"
+                  >
+                    <div
+                      class="content-image-loading content-image-loading--pending"
+                      :style="aspectStyle(channelAspect(sample.channel))"
+                    >
+                      <v-progress-circular
+                        indeterminate
+                        size="22"
+                        width="2"
+                        color="secondary"
+                      />
+                      <span>图{{ assetIndex + 1 }} 生成中…</span>
+                    </div>
+                    <figcaption>
+                      <span class="content-image-caption" :title="asset">
+                        图{{ assetIndex + 1 }}（{{
+                          channelAspect(sample.channel)
+                        }}）：{{ asset }}
+                      </span>
                     </figcaption>
                   </figure>
                 </div>
@@ -3805,7 +4084,7 @@
                   @click="generateContentImages(sample)"
                   >按素材清单生成配图（{{
                     channelAspect(sample.channel)
-                  }}）</v-btn
+                  }}，约 30–45 秒）</v-btn
                 >
               </div>
             </template>
@@ -3934,7 +4213,8 @@
                     >
                   </li>
                   <li v-if="sample.assets?.length">
-                    配图/视频素材：
+                    配图/视频素材清单（{{ sample.assets.length }}
+                    条，与正文一一对应生成 {{ sample.assets.length }} 张成图）：
                     <ol>
                       <li
                         v-for="(asset, assetIndex) in sample.assets"
@@ -3994,6 +4274,40 @@
                     >
                       配图失败：{{ sample.image_errors.join("；") }}
                     </div>
+                    <!-- 点击「生成当前内容配图」后立即按素材清单渲染占位网格，排版与生成完成后的图片网格一致 -->
+                    <div
+                      v-if="
+                        imageLoading === sample.content_id &&
+                        !sample.images?.length
+                      "
+                      class="content-image-grid content-image-grid--current"
+                    >
+                      <figure
+                        v-for="(asset, assetIndex) in sample.assets.slice(0, 8)"
+                        :key="`pending-${sample.content_id}-${assetIndex}`"
+                        class="content-image"
+                      >
+                        <div
+                          class="content-image-loading content-image-loading--pending"
+                          :style="aspectStyle(channelAspect(sample.channel))"
+                        >
+                          <v-progress-circular
+                            indeterminate
+                            size="22"
+                            width="2"
+                            color="secondary"
+                          />
+                          <span>图{{ assetIndex + 1 }} 生成中…</span>
+                        </div>
+                        <figcaption>
+                          <span class="content-image-caption" :title="asset">
+                            图{{ assetIndex + 1 }}（{{
+                              channelAspect(sample.channel)
+                            }}）：{{ asset }}
+                          </span>
+                        </figcaption>
+                      </figure>
+                    </div>
                     <div
                       v-if="sample.images?.length"
                       class="content-image-grid content-image-grid--current"
@@ -4014,12 +4328,7 @@
                             )
                           "
                           class="content-image-clickable"
-                          @click="
-                            openImagePreview(
-                              imageUrls[image.filename],
-                              image.asset,
-                            )
-                          "
+                          @click="openImagePreview(sample, image)"
                         />
                         <div
                           v-else
@@ -4061,12 +4370,7 @@
                             icon="mdi-magnify-plus-outline"
                             :aria-label="`放大图${image.index}`"
                             title="放大查看"
-                            @click="
-                              openImagePreview(
-                                imageUrls[image.filename],
-                                image.asset,
-                              )
-                            "
+                            @click="openImagePreview(sample, image)"
                           />
                           <v-btn
                             v-if="imageUrls[image.filename]"
@@ -4084,7 +4388,7 @@
                     </div>
                   </li>
                   <li v-if="sample.faq?.length">
-                    评论区可能被问到：
+                    评论区可能被问到的 {{ sample.faq.length }} 个问题 + 标准答案：
                     <ol>
                       <li v-for="row in sample.faq" :key="row.q">
                         <b>{{ row.q }}</b> → {{ row.a }}
@@ -4342,11 +4646,9 @@
                 >
               </div>
             </header>
-            <small v-if="complianceReport.scanned_at"
-              >扫描时间：{{
-                formatDateTime(complianceReport.scanned_at)
-              }}</small
-            >
+            <small v-if="completionMeta(complianceReport.scanned_at, 'run_compliance_review')">
+              {{ completionMeta(complianceReport.scanned_at, "run_compliance_review") }}
+            </small>
           </section>
 
           <section
@@ -4388,12 +4690,12 @@
             <div v-if="complianceReviewing" class="review-progress">
               <div class="review-progress__head">
                 <v-progress-circular indeterminate size="16" width="2" color="primary" />
-                <span>正在检索知识库并调用模型复核… 已用 {{ reviewElapsed }}s</span>
+                <span>正在检索知识库并调用模型复核…<template v-if="reviewProgressElapsed"> 已用 {{ reviewProgressElapsed }}</template></span>
               </div>
               <ul class="review-progress__logs auto-bottom">
                 <li v-if="!reviewProgress?.logs?.length">任务已提交，等待服务端响应…</li>
                 <li v-for="(item, i) in reviewProgress?.logs || []" :key="i">
-                  {{ item.message }}
+                  <span v-if="progressLogOffset(item.t)">{{ progressLogOffset(item.t) }} </span>{{ item.message }}
                 </li>
               </ul>
               <div
@@ -4412,7 +4714,7 @@
                 density="compact"
                 class="status-alert"
               >
-                {{ complianceReport.ai_review.notice || "已完成复核" }}
+                {{ maskModelLabel(complianceReport.ai_review.notice) || "已完成复核" }}
                 <template v-if="complianceReport.ai_review.kb_warning">
                   （{{ complianceReport.ai_review.kb_warning }}）</template
                 >
@@ -4669,58 +4971,41 @@
           >
             <div class="d-flex align-center ga-2">
               <v-progress-circular indeterminate size="16" width="2" />
-              <template v-if="reworkLoading === AUTO_FIX_LABEL">
-                一键修复中（仅改写违规片段，多条并行），已用时
-                {{ reworkElapsedText }}（3
-                分钟内完成），完成后自动刷新并重新自检
-              </template>
-              <template v-else>
-                「{{ reworkLoading }}」返工重写中，已用时
-                {{ reworkElapsedText }}（通常 2-5 分钟），完成后自动刷新内容
-              </template>
+              「{{ reworkLoading }}」返工重写中，已用时
+              {{ reworkElapsedText }}（通常 2-5 分钟），完成后自动刷新内容
             </div>
           </v-alert>
           <v-alert
             v-if="contents.length && approvalBlockers.length"
-            type="warning"
-            variant="tonal"
+            icon="mdi-alert-circle"
+            color="#FFF8E1"
+            variant="flat"
+            border="start"
+            border-color="warning"
             density="compact"
-            class="mb-3"
+            class="mb-3 approval-blocker-alert"
           >
-            <div><b>当前无法进入下一步的原因：</b></div>
+            <div class="d-flex align-center flex-wrap">
+              <b>当前无法进入下一步的原因：</b>
+              <v-btn
+                v-if="approvalBlockers.some((item) => item.fixable)"
+                size="x-small"
+                variant="flat"
+                color="#69B076"
+                class="ml-1"
+                prepend-icon="mdi-shield-check"
+                :disabled="
+                  readOnly ||
+                  (!!reworkLoading && reworkLoading !== FIX_ALL_LABEL)
+                "
+                :loading="reworkLoading === FIX_ALL_LABEL"
+                @click="fixAllViolations"
+                >{{ FIX_ALL_LABEL }}</v-btn
+              >
+            </div>
             <ul class="approval-blockers">
               <li v-for="item in approvalBlockers" :key="item.text">
                 {{ item.text }}
-                <v-btn
-                  v-if="item.fixable"
-                  size="x-small"
-                  variant="flat"
-                  color="primary"
-                  class="ml-1"
-                  prepend-icon="mdi-auto-fix"
-                  :disabled="
-                    readOnly ||
-                    (!!reworkLoading && reworkLoading !== AUTO_FIX_LABEL)
-                  "
-                  :loading="reworkLoading === AUTO_FIX_LABEL"
-                  @click="autoFixAll"
-                  >一键修复（约 3 分钟）</v-btn
-                >
-                <v-btn
-                  v-if="item.fixable"
-                  size="x-small"
-                  variant="flat"
-                  color="error"
-                  class="ml-1"
-                  prepend-icon="mdi-shield-check"
-                  :disabled="
-                    readOnly ||
-                    (!!reworkLoading && reworkLoading !== FIX_ALL_LABEL)
-                  "
-                  :loading="reworkLoading === FIX_ALL_LABEL"
-                  @click="fixAllViolations"
-                  >{{ FIX_ALL_LABEL }}</v-btn
-                >
                 <v-btn
                   v-for="channel in item.channels || []"
                   :key="channel"
@@ -4763,7 +5048,16 @@
                   finalRecord.signer_title
                 }}）
               </div>
-              <div><b>确认时长</b>{{ finalRecord.duration_minutes }} 分钟</div>
+              <div>
+                <b>确认跨度</b>
+                <template v-if="auditChainDuration"
+                  >{{ auditChainDuration.text }}（七步业务确认的首末时间跨度，非 AI 执行时间；按
+                  {{ auditChainDuration.steps }} 个已确认节点统计）</template
+                >
+                <template v-else
+                  >{{ finalRecord.duration_minutes }} 分钟</template
+                >
+              </div>
               <div v-if="finalRecord.business_goal_note">
                 <b>业务目标</b>{{ finalRecord.business_goal_note }}
               </div>
@@ -4944,6 +5238,7 @@
                     <th>留痕</th>
                     <th>状态</th>
                     <th>确认时间</th>
+                    <th>步骤历时</th>
                     <th>签字</th>
                     <th>批注</th>
                   </tr>
@@ -4971,8 +5266,9 @@
                         row.confirmed_at ? formatDateTime(row.confirmed_at) : ""
                       }}
                     </td>
+                    <td>{{ auditChainStepDuration(row) }}</td>
                     <td>{{ row.signer || "" }}</td>
-                    <td>{{ row.comment || "" }}</td>
+                    <td>{{ maskModelLabel(row.comment) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -5129,9 +5425,14 @@
                   <strong>{{ auditAction(String(event.action || "")) }}</strong>
                   <p>
                     {{ event.operator }} ·
-                    {{ formatDate(String(event.time || "")) }}
+                    {{ formatDateTime(event.time) }}
+                    <template v-if="formatDuration(event.duration_ms)">
+                      · 耗时：{{ formatDuration(event.duration_ms) }}
+                    </template>
                   </p>
-                  <small v-if="event.comment">{{ event.comment }}</small>
+                  <small v-if="event.comment">{{
+                    maskModelLabel(event.comment)
+                  }}</small>
                 </div>
               </div>
             </div></v-expansion-panel-text
@@ -5201,22 +5502,6 @@
           <span class="section-kicker">HISTORY</span>
           <h2>最近项目</h2>
         </div>
-        <div class="history-heading-actions">
-          <v-btn
-            color="primary"
-            variant="tonal"
-            prepend-icon="mdi-plus"
-            @click="startNewProject"
-            >新增项目</v-btn
-          >
-          <v-btn
-            icon="mdi-refresh"
-            variant="text"
-            aria-label="刷新最近项目"
-            :loading="loadingHistory"
-            @click="loadHistory"
-          />
-        </div>
       </div>
       <div v-if="history.length" class="history-grid">
         <div
@@ -5249,7 +5534,7 @@
               }}
               · {{ item.field_count }} 个字段 ·
               {{ item.keyword_count }} 个关键词 ·
-              {{ formatDate(item.updated_at) }}</small
+              {{ formatDateTime(item.updated_at) }}</small
             >
           </button>
           <div class="history-card-actions">
@@ -5313,7 +5598,22 @@
     <v-dialog v-model="previewImage.show" max-width="1100">
       <v-card>
         <v-card-title class="d-flex align-center">
-          <span class="text-truncate">{{ previewImage.title }}</span>
+          <span class="text-truncate">
+            <template v-if="previewImageCurrent">
+              图{{ previewImageCurrent.index }}（{{
+                previewImageCurrent.aspect
+              }}）：{{ previewImageCurrent.asset }}
+            </template>
+          </span>
+          <v-chip
+            v-if="previewImagePosition.total > 1"
+            size="small"
+            variant="tonal"
+            class="ml-2 flex-shrink-0"
+            >{{ previewImagePosition.current }}/{{
+              previewImagePosition.total
+            }}</v-chip
+          >
           <v-spacer />
           <v-btn
             icon="mdi-close"
@@ -5323,12 +5623,35 @@
             @click="previewImage.show = false"
           />
         </v-card-title>
-        <v-card-text class="text-center">
+        <v-card-text class="text-center content-image-preview">
           <img
-            :src="previewImage.src"
-            :alt="previewImage.title"
+            v-if="
+              previewImageCurrent && imageUrls[previewImageCurrent.filename]
+            "
+            :src="imageUrls[previewImageCurrent.filename]"
+            :alt="previewImageCurrent.asset"
+            :title="previewImageCurrent.prompt"
             style="max-width: 100%; max-height: 80vh; object-fit: contain"
           />
+          <div v-else class="content-image-preview__loading">加载中…</div>
+          <template v-if="previewImagePosition.total > 1">
+            <v-btn
+              class="content-image-preview__nav content-image-preview__nav--prev"
+              icon="mdi-chevron-left"
+              size="small"
+              aria-label="上一张配图"
+              title="上一张"
+              @click="switchPreviewImage(-1)"
+            />
+            <v-btn
+              class="content-image-preview__nav content-image-preview__nav--next"
+              icon="mdi-chevron-right"
+              size="small"
+              aria-label="下一张配图"
+              title="下一张"
+              @click="switchPreviewImage(1)"
+            />
+          </template>
         </v-card-text>
       </v-card>
     </v-dialog>
@@ -5437,6 +5760,8 @@
 </template>
 
 <script setup lang="ts">
+defineOptions({ name: "PharmaTranslatorPage" });
+
 import {
   computed,
   nextTick,
@@ -5449,8 +5774,6 @@ import type { AxiosError } from "axios";
 import {
   pharmaTranslatorApi,
   type ComplianceKnowledgeBase,
-  type ComplianceExpertTicket,
-  type ComplianceAiAnswer,
   type ComplianceFilterState,
   type FilterDisposal,
   type FilterInventoryItem,
@@ -5474,6 +5797,7 @@ import {
   type LiteratureTier,
   type AuditChainRow,
   type PharmaApprovalExportKind,
+  type PharmaAuditEvent,
   type SkuReuseStatus,
 } from "@/api/pharmaTranslator";
 import { knowledgeApi } from "@/api/v1";
@@ -5681,6 +6005,7 @@ const literatureDocKindOptions = [
 ];
 const literatureDocKind = ref("pharmacopoeia");
 const literatureFiles = ref<File[]>([]);
+const MAX_LITERATURE_MB = 128;
 const literatureUploading = ref(false);
 const literatureMatching = ref(false);
 const literatureTier = ref<LiteratureTier>("light");
@@ -5702,6 +6027,7 @@ const literatureLevelDrafts = ref<
   >
 >({});
 const literatureSigner = ref({ name: "", title: "" });
+const literatureDepartmentOptions = ["医学部", "学术部"] as const;
 // 医学部/学术部确认清单四项，须全部勾选方可签字
 const literatureChecklistItems = [
   { key: "claims_complete", label: "卖点清单完整" },
@@ -5720,6 +6046,10 @@ const literatureChecklist = ref<Record<string, boolean>>(
 const literatureChecklistDone = computed(() =>
   literatureChecklistItems.every((item) => literatureChecklist.value[item.key]),
 );
+function selectLiteratureDepartment(department: string) {
+  literatureSigner.value.title = department;
+  literatureChecklist.value = emptyLiteratureChecklist(true);
+}
 const literatureSignerQualified = computed(() => {
   const signer = `${literatureSigner.value.name}${literatureSigner.value.title}`;
   return (
@@ -5733,8 +6063,13 @@ const literatureRedlineLoading = ref(false);
 const selectedKbIds = ref<string[]>([]);
 const kbOptions = ref<Array<{ title: string; value: string }>>([]);
 const kbLoading = ref(false);
+const kbOptionsLoaded = ref(false);
 const dimensionKbIds = ref<string[]>([]);
-const dimensionSearchMode = ref<"auto" | "none" | "standard" | "deep">("auto");
+const dimensionSearchMode = ref<"auto" | "none" | "standard" | "deep">(
+  "deep",
+);
+const dimensionServiceDialog = ref(false);
+const dimensionRegenUnlocked = ref(false);
 const dimensionSearchModeOptions = [
   { title: "自动（优先深度采集）", value: "auto" },
   { title: "标准采集（opencli）", value: "standard" },
@@ -5751,6 +6086,10 @@ const competitorKeywords = ref("");
 const competitorBrands = ref("");
 const competitorUrls = ref("");
 const competitorPerKeyword = ref(20);
+const competitorAutoRun = ref(true);
+const competitorAutoRunning = ref(false);
+const competitorSupplementCompleted = ref(false);
+const competitorAutoAttempts = new Set<string>();
 const competitorScanning = ref(false);
 const competitorAnalyzing = ref(false);
 const competitorVoiceImports = ref<string[]>([]);
@@ -5766,11 +6105,36 @@ const reviewProgress = ref<{
   logs: { t: number; message: string }[];
   streams: Record<string, string>;
 } | null>(null);
-const reviewElapsed = ref(0);
+const reviewProgressElapsed = computed(() => {
+  const progress = reviewProgress.value;
+  if (progress?.started_at == null || !progress.logs.length) return "";
+  return formatDuration(
+    Math.max(0, progress.logs[progress.logs.length - 1].t - progress.started_at) * 1000,
+  );
+});
 let reviewTimer: number | undefined;
 const ticketSubmitting = ref(false);
 const customerServiceDialog = ref(false);
-const previewImage = ref({ show: false, src: "", title: "" });
+const previewImage = ref({ show: false, contentId: "", index: 0 });
+// 预览跟随内容对象：生成完成后项目刷新，预览仍指向同一条内容的最新图片
+const previewImageRows = computed(() => {
+  const content = contents.value.find(
+    (item) => item.content_id === previewImage.value.contentId,
+  );
+  return [...(content?.images || [])].sort((a, b) => a.index - b.index);
+});
+const previewImageCurrent = computed(
+  () =>
+    previewImageRows.value.find(
+      (image) => image.index === previewImage.value.index,
+    ) || previewImageRows.value[0] || null,
+);
+const previewImagePosition = computed(() => {
+  const pos = previewImageRows.value.findIndex(
+    (image) => image.index === previewImageCurrent.value?.index,
+  );
+  return { current: pos + 1, total: previewImageRows.value.length };
+});
 const reportPreview = ref({
   show: false,
   loading: false,
@@ -5782,8 +6146,22 @@ const reportMarkdown = new MarkdownIt({
   linkify: true,
   breaks: true,
 });
-function openImagePreview(src: string, title: string) {
-  previewImage.value = { show: true, src, title };
+type PharmaContentImageRow = NonNullable<PharmaContent["images"]>[number];
+function openImagePreview(content: PharmaContent, image: PharmaContentImageRow) {
+  previewImage.value = {
+    show: true,
+    contentId: content.content_id,
+    index: image.index,
+  };
+}
+function switchPreviewImage(direction: -1 | 1) {
+  const rows = previewImageRows.value;
+  if (rows.length < 2) return;
+  const current = rows.findIndex(
+    (image) => image.index === previewImageCurrent.value?.index,
+  );
+  const next = (current + direction + rows.length) % rows.length;
+  previewImage.value = { ...previewImage.value, index: rows[next].index };
 }
 const complianceDuration = ref<number | null>(null);
 const citationCovered = ref(false);
@@ -5808,11 +6186,10 @@ const filterDisposalDrafts = ref<Record<string, FilterDisposalDraft>>({});
 const filterKbIds = ref<string[]>([]);
 const filterAiSearch = ref(true);
 const filterRunning = ref(false);
-const filterTicketQuestion = ref("");
-const filterTicketRiskIds = ref<string[]>([]);
+const filterAutoAttempts = new Set<string>();
 const filterSignerName = ref("");
 const filterSignerTitle = ref("合规部");
-const filterApplyDate = ref("");
+const filterApplyDate = ref(todayStr);
 const filterAuthority = ref("省级药品监督管理部门");
 const filterAdNote = ref("");
 const filterComment = ref("");
@@ -5822,14 +6199,6 @@ const filterConfirmChecksComplete = computed(() =>
     filterConfirmChecks.value.includes(item.value),
   ),
 );
-const consultDialog = ref(false);
-const consultQrBroken = ref(false);
-const aiAskQuestion = ref("");
-const aiAskLoading = ref(false);
-const aiAskResult = ref<ComplianceAiAnswer | null>(null);
-const ZR_CONSULT_QR_URL = `${
-  import.meta.env.BASE_URL
-}zhongrui-consult-qrcode.png`;
 const ZR_CONFIRM_CHECKS = [
   { value: "label_review", label: "三色标签复核" },
   { value: "caution_notes", label: "谨慎项逐条批注" },
@@ -5839,6 +6208,11 @@ const ZR_CONFIRM_CHECKS = [
     label: "文献引证是否完整覆盖所有合规风险点",
   },
 ];
+function selectComplianceFilterChecks() {
+  // 一键确认：勾选全部确认项，同时批量采纳谨慎/替换项复核建议（自动补默认批注）
+  filterConfirmChecks.value = ZR_CONFIRM_CHECKS.map((item) => item.value);
+  adoptAllFilterReviews();
+}
 let forceFilterInventorySync = false;
 let filterDraftCounter = 0;
 function nextFilterDraftKey() {
@@ -6078,6 +6452,7 @@ const dimensionFlowRows = computed(() =>
     text: dimensionItemsOf(code).slice(0, 3).join("、"),
   })),
 );
+const competitor = computed(() => project.value?.competitor || null);
 const scenePriorityMatrix = computed(() => {
   const gaps = competitor.value?.analysis?.gap_map || [];
   const rows = activeScenes.value.map((scene) => {
@@ -6115,6 +6490,41 @@ const scenePriorityMatrix = computed(() => {
   });
   return ranked;
 });
+const DEFAULT_SELECTED_SCENES = 3;
+const MAX_SELECTED_SCENES = 6;
+const initializedSceneSelection = new Set<string>();
+watch(
+  () => ({
+    projectId: project.value?.project_id || "",
+    step: currentStep.value,
+    sceneIds: scenePriorityMatrix.value.map((row) => row.scene_id).join(","),
+  }),
+  ({ projectId, step, sceneIds }) => {
+    if (
+      !projectId ||
+      step !== 4 ||
+      !sceneIds ||
+      initializedSceneSelection.has(projectId)
+    )
+      return;
+    const recommendedIds = new Set(
+      scenePriorityMatrix.value
+        .slice(0, DEFAULT_SELECTED_SCENES)
+        .map((row) => row.scene_id),
+    );
+    scenes.value.forEach((scene) => {
+      scene.selected = !scene.deleted && recommendedIds.has(scene.scene_id);
+    });
+    initializedSceneSelection.add(projectId);
+  },
+  { immediate: true },
+);
+function sceneRecommendationPriority(sceneId: string) {
+  return (
+    scenePriorityMatrix.value.find((row) => row.scene_id === sceneId)?.priority ||
+    ""
+  );
+}
 function starText(level: number) {
   return "★".repeat(level) + "☆".repeat(Math.max(0, 3 - level));
 }
@@ -6133,6 +6543,35 @@ const contents = computed(() => project.value?.contents || []);
 const auditChain = computed<AuditChainRow[]>(
   () => project.value?.audit_chain || [],
 );
+function auditChainStepDuration(row: AuditChainRow) {
+  if (!row.confirmed_at) return "—";
+  const confirmedRows = auditChain.value
+    .filter((candidate) => candidate.confirmed_at)
+    .sort((a, b) => a.step - b.step);
+  const rowIndex = confirmedRows.findIndex((candidate) => candidate.step === row.step);
+  if (rowIndex <= 0) return rowIndex === 0 ? "首个确认节点" : "—";
+  const currentTime = Date.parse(row.confirmed_at);
+  const previousTime = Date.parse(confirmedRows[rowIndex - 1].confirmed_at || "");
+  const duration = currentTime - previousTime;
+  return Number.isFinite(duration) && duration >= 0 ? formatDuration(duration) : "—";
+}
+const auditChainDuration = computed(() => {
+  const times = auditChain.value
+    .map((row) => (row.confirmed_at ? new Date(row.confirmed_at).getTime() : NaN))
+    .filter((t) => !Number.isNaN(t));
+  if (times.length < 2) return null;
+  const minutes = Math.max(
+    1,
+    Math.round((Math.max(...times) - Math.min(...times)) / 60000),
+  );
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return {
+    minutes,
+    text: hours ? `${hours} 小时${rest ? ` ${rest} 分钟` : ""}` : `${minutes} 分钟`,
+    steps: times.length,
+  };
+});
 const auditChainGaps = computed(() =>
   auditChain.value
     .filter((row) => row.step < 7 && row.status !== "confirmed")
@@ -6182,34 +6621,11 @@ const selectedKeywordCount = computed(
 const selectedSceneCount = computed(
   () => scenes.value.filter((scene) => scene.selected).length,
 );
-// 场景多选：确认提交上限 5 个，一键全选只取前 5 个未删除场景
-const MAX_SELECTED_SCENES = 5;
-const selectableScenes = computed(() =>
-  scenes.value.filter((scene) => !scene.deleted),
-);
-const allScenesSelected = computed(() => {
-  const candidates = selectableScenes.value.slice(0, MAX_SELECTED_SCENES);
-  return candidates.length > 0 && candidates.every((scene) => scene.selected);
-});
-function scrollToSceneActions() {
-  nextTick(() => {
-    document
-      .getElementById("scene-step-actions")
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
-  });
-}
-function toggleAllScenesSelected() {
-  if (readOnly.value || currentStep.value !== 4) return;
-  const target = !allScenesSelected.value;
-  const candidates = selectableScenes.value.slice(0, MAX_SELECTED_SCENES);
-  scenes.value.forEach((scene) => {
-    scene.selected = target && candidates.includes(scene);
-  });
-  if (target) scrollToSceneActions();
-}
 function onSceneCheckboxChange(value: boolean | null) {
   if (!value || readOnly.value || currentStep.value !== 4) return;
-  scrollToSceneActions();
+  if (selectedSceneCount.value === MAX_SELECTED_SCENES) {
+    notify(`最多选择 ${MAX_SELECTED_SCENES} 个重点场景`, "info");
+  }
 }
 const confirmedClaimCount = computed(
   () =>
@@ -6268,6 +6684,10 @@ const literature = computed(
     },
 );
 const literatureDocuments = computed(() => literature.value.documents || []);
+// 开始匹配后锁定企业文献与知识库来源，保证匹配结果可追溯
+const literatureSourcesLocked = computed(
+  () => literatureMatching.value || literatureMatched.value,
+);
 const evidenceSortRank: Record<string, number> = {
   strong: 0,
   weak: 1,
@@ -6282,12 +6702,102 @@ const literatureClaims = computed(() =>
   ),
 );
 const unusableClaims = computed(() => project.value?.unusable_claims || []);
+const citationChannelGroups = [
+  { key: "uploaded", title: "企业文献", required: false },
+  { key: "knowledge_base", title: "本地知识库", required: false },
+  { key: "leaflet", title: "说明书", required: false },
+  { key: "pubmed", title: "外部文献", required: false },
+] as const;
+function citationLabel(citation: PharmaLiteratureClaim["citations"][number]) {
+  return citation.page_no
+    ? `${citation.source_label} P${citation.page_no}`
+    : citation.source_label;
+}
+function claimSourceSummary(claim: PharmaLiteratureClaim) {
+  return citationChannelGroups
+    .map((group) => {
+      const labels = [
+        ...new Set(
+          (claim.citations || [])
+            .filter((item) => item.source_channel === group.key)
+            .map(citationLabel),
+        ),
+      ];
+      const coverage = claim.source_coverage?.[
+        group.key as "uploaded" | "knowledge_base"
+      ];
+      for (const label of coverage?.labels || []) {
+        if (!labels.includes(label)) labels.push(label);
+      }
+      const related = (coverage?.related_labels || []).filter(
+        (label) => !labels.includes(label),
+      );
+      return {
+        key: group.key,
+        title: group.title,
+        labels,
+        related,
+        required: group.required,
+      };
+    })
+    .filter((group) => group.required || group.labels.length);
+}
+// 三联卡·文献来源：固定以「产品说明书 / 企业商品文献 / 本地知识库」为标准来源
+const tripleCardStandardSources = [
+  { key: "leaflet", title: "产品说明书" },
+  { key: "uploaded", title: "企业商品文献" },
+  { key: "knowledge_base", title: "本地知识库" },
+] as const;
+function tripleCardSources(claim: PharmaLiteratureClaim) {
+  const saved = claim.triple_card?.citation_sources || [];
+  return tripleCardStandardSources.map(({ key, title }) => {
+    let labels = saved.find((item) => item.key === key)?.labels || [];
+    if (!labels.length) {
+      labels = [
+        ...new Set(
+          (claim.citations || [])
+            .filter((item) => item.source_channel === key)
+            .map(citationLabel),
+        ),
+      ];
+    }
+    if (!labels.length && key !== "leaflet") {
+      labels = claim.source_coverage?.[key]?.labels || [];
+    }
+    if (!labels.length && key === "leaflet" && claim.source_label) {
+      labels = [`说明书【${claim.source_label}】`];
+    }
+    return { key, title, labels };
+  }).filter((source) => source.labels.length);
+}
+function claimCitationGroups(claim: PharmaLiteratureClaim) {
+  const kbSelected = Boolean(
+    literature.value.kb_ids?.length || literature.value.kb_names?.length,
+  );
+  return citationChannelGroups
+    .map((group) => ({
+      key: group.key,
+      title: group.title,
+      items: (claim.citations || []).filter(
+        (item) => item.source_channel === group.key,
+      ),
+      required: group.required,
+      missText:
+        group.key === "uploaded"
+          ? literatureDocuments.value.length
+            ? "企业文献未命中该卖点，建议补充上传相关文献"
+            : "尚未上传企业文献"
+          : kbSelected
+            ? "本地知识库未检索到该卖点相关内容"
+            : "未接入可用的本地知识库",
+    }))
+    .filter((group) => group.required || group.items.length);
+}
 const literatureClaimGroups = computed(() => {
   const order: Array<{ type: string; label: string; icon: string }> = [
     { type: "ingredients", label: "成分卖点", icon: "🧪" },
     { type: "efficacy", label: "功效卖点", icon: "🎯" },
     { type: "audience", label: "人群卖点", icon: "👥" },
-    { type: "endorsement", label: "背书卖点", icon: "🏆" },
   ];
   return order
     .map((group) => ({
@@ -6299,27 +6809,23 @@ const literatureClaimGroups = computed(() => {
     .filter((group) => group.items.length);
 });
 const literatureMatched = computed(() => Boolean(literature.value.matched_at));
-// 进入文献来源步骤时自动执行一次文献匹配（每个项目版本仅一次）；
-// 结果不满意时可随时点「重新执行文献匹配」手动再来一次。
-const literatureAutoAttempts = new Set<string>();
-watch([activeStep, currentStep, () => project.value?.workflow?.version], () => {
-  if (
-    !project.value ||
-    activeStep.value !== 3 ||
-    currentStep.value !== 3 ||
-    readOnly.value ||
-    literatureMatched.value ||
-    literatureMatching.value ||
-    !literatureClaims.value.length
-  )
-    return;
-  const key = `${project.value.project_id}:${
-    project.value.workflow?.version || 1
-  }`;
-  if (literatureAutoAttempts.has(key)) return;
-  literatureAutoAttempts.add(key);
-  runLiteratureMatch();
-});
+function literatureClaimDisplayText(claim: PharmaLiteratureClaim) {
+  return claim.claim_type === "ingredients" && claim.product_name
+    ? `${claim.product_name} · ${claim.text}`
+    : claim.text;
+}
+// 文献匹配仅由用户手动点击「开始/重新执行文献匹配」触发；匹配完成后自动勾选可确认卖点。
+function autoAcceptLiteratureClaims() {
+  if (readOnly.value || currentStep.value !== 3) return 0;
+  let count = 0;
+  literatureClaims.value.forEach((claim) => {
+    if (effectiveLevel(claim) !== "none" && claim.citations?.length) {
+      claim.accepted = true;
+      count += 1;
+    }
+  });
+  return count;
+}
 const literatureSignoff = computed(
   () => project.value?.literature_signoff || null,
 );
@@ -6500,6 +7006,11 @@ function boldParts(line: string) {
   }));
 }
 const batchChecklist = ref<string[]>([]);
+function selectGeneratedComplianceChecklist() {
+  batchChecklist.value = [
+    ...new Set([...batchChecklist.value, "labels", "claims"]),
+  ];
+}
 const reworkReasonOptions = [
   { key: "tone_mismatch", text: "平台调性错位" },
   { key: "label_missing", text: "合规标签遗漏" },
@@ -6534,6 +7045,24 @@ const topicsEditable = computed(
 const selectedTopicDraftCount = computed(
   () => Object.values(topicDrafts.value).filter((row) => row.selected).length,
 );
+
+function selectGeneratedTopics(content?: PharmaContent) {
+  const matrix = contentBatch.value?.topic_matrix || [];
+  const matching = content
+    ? matrix
+        .filter((group) =>
+          content.scene_no
+            ? group.scene_no === content.scene_no
+            : group.topics.some((topic) => topic.channel === content.channel),
+        )
+        .flatMap((group) => group.topics)
+    : matrix.flatMap((group) => group.topics);
+  for (const topic of matching) {
+    const draft = topicDrafts.value[topic.no];
+    if (draft) draft.selected = true;
+  }
+}
+
 watch(
   () => contentBatch.value?.topic_matrix,
   (matrix) => {
@@ -6552,6 +7081,7 @@ watch(
 const imageLoading = ref("");
 const imageUrls = ref<Record<string, string>>({});
 const imageFetching = new Set<string>();
+
 watch(
   () => [
     project.value?.project_id || "",
@@ -6733,8 +7263,18 @@ const filterScanned = computed(() =>
       complianceFilter.value.status !== "not_scanned",
   ),
 );
+const filterHasResults = computed(() =>
+  Boolean(
+    filterScanned.value ||
+      (complianceFilter.value?.status &&
+        complianceFilter.value.status !== "not_scanned") ||
+      complianceFilter.value?.risks?.length ||
+      complianceFilter.value?.samples?.length,
+  ),
+);
 const canEditFilter = computed(
-  () => !readOnly.value && currentStep.value === 6,
+  // 到达合规过滤步骤后保持可编辑，便于生成内容后重新运行过滤
+  () => !readOnly.value && currentStep.value >= 6,
 );
 const filterInventoryDirty = computed(
   () =>
@@ -6770,32 +7310,6 @@ const filterPendingReviewCount = computed(
 );
 const filterDisposals = computed<FilterDisposal[]>(
   () => complianceFilter.value?.disposals || [],
-);
-const filterPendingDisposalCount = computed(
-  () =>
-    filterDisposals.value.filter((disposal) => {
-      const draft = filterDisposalDrafts.value[disposal.disposal_id];
-      if (!draft?.status) return true;
-      return (
-        draft.status === "scheduled" &&
-        !/^\d{4}-\d{2}-\d{2}$/.test(draft.scheduled_date)
-      );
-    }).length,
-);
-const filterTicketRiskOptions = computed(() =>
-  (complianceFilter.value?.risks || [])
-    .filter((risk) => risk.risk_id)
-    .map((risk) => ({
-      title: `${riskLevelLabel(risk.level)} ${
-        risk.platform ? `[${risk.platform}] ` : ""
-      }${risk.message}`,
-      value: risk.risk_id as string,
-    })),
-);
-const filterTickets = computed<ComplianceExpertTicket[]>(() =>
-  (project.value?.compliance_tickets || []).filter(
-    (ticket) => ticket.scope === "compliance_filter",
-  ),
 );
 const filterRecord = computed(() => complianceFilter.value?.record || null);
 
@@ -6893,6 +7407,7 @@ watch(
   () => project.value?.project_id,
   () => {
     dimensionsError.value = "";
+    dimensionRegenUnlocked.value = false;
     literatureLevelDrafts.value = {};
     const signoff = project.value?.literature_signoff;
     literatureSigner.value = {
@@ -6928,12 +7443,54 @@ watch(workflowComment, (value, oldValue) => {
 });
 watch(activeStep, (step) => {
   if ((step === 2 || step === 3) && !kbOptions.value.length) loadKbOptions();
-  if (step === 5) loadCompetitorCaps();
+  if (step === 5) {
+    loadCompetitorCaps();
+    const projectId = project.value?.project_id;
+    if (
+      competitorAutoRun.value &&
+      projectId &&
+      currentStep.value === 5 &&
+      !competitor.value?.items?.length &&
+      !competitorAutoAttempts.has(projectId)
+    ) {
+      competitorAutoAttempts.add(projectId);
+      void nextTick(() => runCompetitorAutoFlow());
+    }
+  }
   if (step === 6 || step === 9) {
     loadComplianceKb();
-    if (!kbOptions.value.length) loadKbOptions();
+    if (!kbOptionsLoaded.value) loadKbOptions();
   }
 });
+watch(
+  () => ({
+    projectId: project.value?.project_id || "",
+    round: project.value?.workflow?.version || 0,
+    step: currentStep.value,
+    kbReady: kbOptionsLoaded.value,
+    scanned: filterHasResults.value,
+    editable: canEditFilter.value,
+  }),
+  async ({ projectId, round, step, kbReady, scanned, editable }) => {
+    if (!projectId || step !== 6) return;
+    if (!kbReady) {
+      await loadKbOptions();
+      return;
+    }
+    const attemptKey = `${projectId}:${round}`;
+    if (
+      scanned ||
+      !editable ||
+      filterRunning.value ||
+      filterAutoAttempts.has(attemptKey)
+    )
+      return;
+    filterAutoAttempts.add(attemptKey);
+    await nextTick();
+    await runComplianceFilter();
+  },
+  { immediate: true },
+);
 const LAST_PROJECT_KEY = "pharma-translator:last-project";
 watch(
   () => project.value?.project_id || "",
@@ -6985,6 +7542,7 @@ function normalizeProject(data: PharmaProject) {
     approvals: data.approvals || {},
     version_history: data.version_history || [],
     user_notes: data.user_notes || [],
+    audit_events: data.audit_events || [],
     workflow: data.workflow || {
       current_step: 1,
       status: data.status || "active",
@@ -7037,6 +7595,7 @@ function normalizeProject(data: PharmaProject) {
     text: String(note.text || ""),
   }));
   syncComplianceFilterDrafts(normalized);
+  if (kbOptionsLoaded.value) syncFilterKbSelection();
   return normalized;
 }
 function syncComplianceFilterDrafts(normalized: PharmaProject) {
@@ -7093,7 +7652,7 @@ function syncComplianceFilterDrafts(normalized: PharmaProject) {
   if (record) {
     filterSignerName.value = record.signer_name || "";
     filterSignerTitle.value = record.signer_title || "合规部";
-    filterApplyDate.value = record.ad_review_schedule?.apply_date || "";
+    filterApplyDate.value = record.ad_review_schedule?.apply_date || todayStr;
     filterAuthority.value =
       record.ad_review_schedule?.authority || "省级药品监督管理部门";
     filterAdNote.value = record.ad_review_schedule?.note || "";
@@ -7101,19 +7660,15 @@ function syncComplianceFilterDrafts(normalized: PharmaProject) {
   } else if (!sameProject) {
     filterSignerName.value = "";
     filterSignerTitle.value = "合规部";
-    filterApplyDate.value = "";
+    filterApplyDate.value = todayStr;
     filterAuthority.value = "省级药品监督管理部门";
     filterAdNote.value = "";
     filterComment.value = "";
     filterConfirmChecks.value = [];
-    aiAskQuestion.value = "";
-    aiAskResult.value = null;
-    filterTicketQuestion.value = "";
-    filterTicketRiskIds.value = [];
   }
 }
 function notify(message: string, color = "success") {
-  snackbar.value = { show: true, message, color };
+  snackbar.value = { show: true, message: maskModelLabel(message), color };
 }
 function extractError(error: unknown) {
   if (typeof error === "string" && error.trim()) return error;
@@ -7146,10 +7701,10 @@ function setFile(file?: File) {
   const extension = file.name.split(".").pop()?.toLowerCase() || "";
   if (!["jpg", "jpeg", "png", "webp", "pdf"].includes(extension))
     return notify("仅支持 JPG、JPEG、PNG、WEBP 和 PDF", "error");
-  const maxBytes = extension === "pdf" ? 100 * 1024 * 1024 : 20 * 1024 * 1024;
+  const maxBytes = extension === "pdf" ? 200 * 1024 * 1024 : 20 * 1024 * 1024;
   if (file.size > maxBytes)
     return notify(
-      extension === "pdf" ? "PDF 不得超过 100 MB" : "图片不得超过 20 MB",
+      extension === "pdf" ? "PDF 不得超过 200 MB" : "图片不得超过 20 MB",
       "error",
     );
   if (!file.size) return notify("上传文件为空", "error");
@@ -7238,7 +7793,8 @@ async function analyze() {
     productType.value = project.value.product_type;
     activeStep.value = currentStep.value;
     workflowComment.value = "";
-    notify(`识别完成：${filledFieldCount.value} 个字段，等待人工确认`);
+    if (!readOnly.value) allFieldsConfirmed.value = true;
+    notify(`识别完成：${filledFieldCount.value} 个字段，已自动勾选确认，请核对`);
     await loadHistory();
   } catch (error) {
     notify(extractError(error), "error");
@@ -7439,6 +7995,21 @@ function confirmProfile() {
     "产品档案已冻结，已进入多维拆解",
   );
 }
+function openDimensionService() {
+  dimensionRegenUnlocked.value = true;
+  dimensionServiceDialog.value = true;
+}
+async function onRegenerateDimensionsClick() {
+  // 已生成过内容时，重新生成需先通过人工客服解锁
+  if (dimensionGeneration.value && !dimensionRegenUnlocked.value) {
+    dimensionServiceDialog.value = true;
+    return;
+  }
+  await generateDimensions();
+  if (dimensionGeneration.value && !dimensionsError.value) {
+    dimensionRegenUnlocked.value = false;
+  }
+}
 async function autoGenerateDimensions(afterProfile = false) {
   if (
     !project.value ||
@@ -7562,6 +8133,21 @@ async function confirmDimensions() {
     nextTick(() => scrollToAnchor("literature-step"));
   }
 }
+function syncFilterKbSelection() {
+  const visibleIds = new Set(kbOptions.value.map((item) => item.value));
+  const existingFilterIds = filterKbIds.value.filter((id) => visibleIds.has(id));
+  const inheritedIds = selectedKbIds.value.filter((id) => visibleIds.has(id));
+  filterKbIds.value = existingFilterIds.length
+    ? existingFilterIds
+    : inheritedIds.length
+      ? inheritedIds
+      : kbOptions.value.slice(0, 8).map((item) => item.value);
+}
+// 知识库选项加载完成后清洗勾选：剔除已失效的 kb_id（避免选择器透出原始 UUID），
+// 无勾选时自动继承文献来源选择或默认勾选前 8 个
+watch(kbOptionsLoaded, (loaded) => {
+  if (loaded) syncFilterKbSelection();
+});
 async function loadKbOptions() {
   if (kbLoading.value) return;
   kbLoading.value = true;
@@ -7581,36 +8167,77 @@ async function loadKbOptions() {
         title: String(item.kb_name || item.kb_id),
         value: String(item.kb_id),
       }));
+    syncFilterKbSelection();
   } catch {
     kbOptions.value = [];
   } finally {
     kbLoading.value = false;
+    kbOptionsLoaded.value = true;
   }
 }
 async function uploadLiterature() {
   if (
     !project.value ||
+    literatureSourcesLocked.value ||
     literatureUploading.value ||
     !literatureFiles.value.length
   )
     return;
+  const allowed = [
+    "txt", "md", "markdown", "rst", "adoc", "pdf",
+    "docx", "epub", "xls", "xlsx", "pptx",
+  ];
+  const rejected: string[] = [];
+  const accepted = literatureFiles.value.filter((file) => {
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    if (!allowed.includes(extension)) {
+      rejected.push(`${file.name}（格式不支持）`);
+      return false;
+    }
+    if (file.size > MAX_LITERATURE_MB * 1024 * 1024) {
+      rejected.push(`${file.name}（超过 ${MAX_LITERATURE_MB} MB）`);
+      return false;
+    }
+    if (!file.size) {
+      rejected.push(`${file.name}（空文件）`);
+      return false;
+    }
+    return true;
+  });
+  // 不合规文件自动从待上传列表清除
+  literatureFiles.value = accepted;
+  if (rejected.length)
+    notify(`已自动清除无法上传的文件：${rejected.join("、")}`, "warning");
+  if (!accepted.length) return;
+  if (accepted.length > 10) return notify("单次最多上传 10 份文献", "error");
   literatureUploading.value = true;
   try {
     const response = await pharmaTranslatorApi.uploadLiterature(
       project.value.project_id,
-      { docKind: literatureDocKind.value, files: literatureFiles.value },
+      { docKind: literatureDocKind.value, files: accepted },
     );
+    const failures = (response.data.data as any)?.literature_upload_failures as
+      | { filename: string; reason: string }[]
+      | undefined;
     project.value = normalizeProject(response.data.data);
     literatureFiles.value = [];
-    notify("文献已上传并切片，请重新执行文献匹配");
+    if (failures?.length)
+      notify(
+        `已上传 ${accepted.length - failures.length} 份；以下文件失败已自动清除：` +
+          failures.map((f) => `${f.filename}（${f.reason}）`).join("、"),
+        "warning",
+      );
+    else notify("文献已上传并切片，请重新执行文献匹配");
   } catch (error) {
-    notify(extractError(error), "error");
+    literatureFiles.value = [];
+    notify(`${extractError(error)}（失败文件已自动清除）`, "error");
   } finally {
     literatureUploading.value = false;
   }
 }
 async function removeLiterature(docId: string) {
-  if (!project.value || literatureUploading.value) return;
+  if (!project.value || literatureSourcesLocked.value || literatureUploading.value)
+    return;
   literatureUploading.value = true;
   try {
     const response = await pharmaTranslatorApi.deleteLiterature(
@@ -7655,7 +8282,8 @@ async function runLiteratureMatch() {
     });
     project.value = normalizeProject(response.data.data);
     literatureLevelDrafts.value = {};
-    notify("文献匹配完成，请逐条核对三色标签与三联卡");
+    const accepted = autoAcceptLiteratureClaims();
+    notify(`文献匹配完成，已自动勾选 ${accepted} 条有证据的卖点，请逐条核对`);
   } catch (error) {
     // 匹配含知识库检索 + 生成模型分析，耗时可能超过 2 分钟；长连接被代理/网络重置
     // 或前端超时时后端通常仍在继续执行，改为轮询项目状态取回结果。
@@ -7667,7 +8295,8 @@ async function runLiteratureMatch() {
       if (recovered) {
         if (project.value?.project_id === projectId) project.value = recovered;
         literatureLevelDrafts.value = {};
-        notify("文献匹配完成，请逐条核对三色标签与三联卡");
+        const accepted = autoAcceptLiteratureClaims();
+        notify(`文献匹配完成，已自动勾选 ${accepted} 条有证据的卖点，请逐条核对`);
       } else {
         notify("文献匹配连接中断且未取回结果，请稍后刷新项目或重试", "error");
       }
@@ -7796,8 +8425,11 @@ function toggleSceneDeleted(scene: PharmaScene) {
   if (scene.deleted) scene.selected = false;
 }
 async function confirmScenes() {
-  if (selectedSceneCount.value < 1 || selectedSceneCount.value > 5)
-    return notify("请选择 1—5 个重点场景", "warning");
+  if (
+    selectedSceneCount.value < 1 ||
+    selectedSceneCount.value > MAX_SELECTED_SCENES
+  )
+    return notify(`请选择 1—${MAX_SELECTED_SCENES} 个重点场景`, "warning");
   await runAction(
     "confirm_scenes",
     { scenes: scenes.value },
@@ -7807,8 +8439,13 @@ async function confirmScenes() {
     nextTick(() => scrollToAnchor("competitor-step"));
   }
 }
-const competitor = computed(() => project.value?.competitor || null);
 const competitorAnalysis = computed(() => competitor.value?.analysis || null);
+watch(
+  () => project.value?.project_id,
+  () => {
+    competitorSupplementCompleted.value = false;
+  },
+);
 const sampleAssessment = computed(
   () => competitorAnalysis.value?.sample_assessment || null,
 );
@@ -7817,9 +8454,15 @@ const samplePlatformSummary = computed(() =>
     .map(([platform, count]) => `${competitorPlatformLabel(platform)} ${count}`)
     .join(" / "),
 );
-function applySampleSuggestions(scanNow: boolean) {
+async function applySampleSuggestions(scanNow: boolean) {
   const assessment = sampleAssessment.value;
-  if (!assessment) return;
+  if (
+    !assessment ||
+    assessment.sufficient ||
+    competitorAutoRunning.value ||
+    competitorSupplementCompleted.value
+  )
+    return;
   // 合并建议关键词，保留用户已填写的
   const keywords = [
     ...splitLines(competitorKeywords.value),
@@ -7842,8 +8485,19 @@ function applySampleSuggestions(scanNow: boolean) {
       ? "deep"
       : "standard";
   }
-  if (scanNow) void scanCompetitors();
-  else notify("已填入补采参数，可调整后点击「补采」", "success");
+  if (!scanNow) {
+    notify("已填入补采参数，可调整后点击「补采」", "success");
+    return;
+  }
+  competitorAutoRunning.value = true;
+  try {
+    const scanned = await scanCompetitors();
+    if (!scanned) return;
+    const analyzed = await analyzeCompetitors();
+    if (analyzed) competitorSupplementCompleted.value = true;
+  } finally {
+    competitorAutoRunning.value = false;
+  }
 }
 const competitorItemMap = computed(
   () =>
@@ -8027,13 +8681,15 @@ async function loadCompetitorCaps() {
     competitorCaps.value = null;
   }
 }
-async function scanCompetitors() {
+async function scanCompetitors(): Promise<boolean> {
   if (!project.value || competitorScanning.value || competitorAnalyzing.value)
-    return;
+    return false;
   // 「开始实时采集 / 补采」统一走 TikHub 深度档
   await loadCompetitorCaps();
-  if (competitorCaps.value && !competitorCaps.value.tikhub_configured)
-    return notify("TikHub 未配置（缺少 API Key），无法实时采集", "error");
+  if (competitorCaps.value && !competitorCaps.value.tikhub_configured) {
+    notify("TikHub 未配置（缺少 API Key），无法实时采集", "error");
+    return false;
+  }
   competitorMode.value = "deep";
   if (!competitorPlatforms.value.length)
     competitorPlatforms.value = ["douyin", "xiaohongshu"];
@@ -8054,24 +8710,26 @@ async function scanCompetitors() {
       ),
     });
     if (context !== projectContext || project.value?.project_id !== projectId)
-      return;
+      return false;
     project.value = normalizeProject(response.data.data);
     const latest = project.value.competitor?.scans?.slice(-1)[0];
     notify(
       latest
-        ? `采集完成：获取 ${latest.fetched} 条，新增 ${latest.added} 条，请执行竞品分析`
-        : "采集完成，请执行竞品分析",
+        ? `采集完成：获取 ${latest.fetched} 条，新增 ${latest.added} 条`
+        : "采集完成",
       latest && !latest.added ? "warning" : "success",
     );
+    return true;
   } catch (error) {
     if (context === projectContext) notify(extractError(error), "error");
+    return false;
   } finally {
     if (context === projectContext) competitorScanning.value = false;
   }
 }
-async function analyzeCompetitors() {
+async function analyzeCompetitors(): Promise<boolean> {
   if (!project.value || competitorScanning.value || competitorAnalyzing.value)
-    return;
+    return false;
   const projectId = project.value.project_id;
   const context = projectContext;
   competitorAnalyzing.value = true;
@@ -8080,17 +8738,37 @@ async function analyzeCompetitors() {
       our_price: competitorOurPrice.value.trim() || undefined,
     });
     if (context !== projectContext || project.value?.project_id !== projectId)
-      return;
+      return false;
     project.value = normalizeProject(response.data.data);
-    competitorVoiceImports.value = [];
+    // 竞品扫描生成后自动勾选：缺口按建议优先级全选，用户原话全选
+    selectGaps("all");
+    competitorVoiceImports.value =
+      competitorAnalysis.value?.user_voices.map((v) => v.item_id) || [];
     notify("竞品分析完成，请核对内容缺口地图并选定 P0/P1 蓝海切口");
     await nextTick();
     scrollToAnchor("competitor-market-group");
+    return true;
   } catch (error) {
     if (context === projectContext) notify(extractError(error), "error");
+    return false;
   } finally {
     if (context === projectContext) competitorAnalyzing.value = false;
   }
+}
+async function runCompetitorAutoFlow() {
+  if (competitorAutoRunning.value || readOnly.value || currentStep.value !== 5)
+    return;
+  competitorAutoRunning.value = true;
+  try {
+    const scanned = await scanCompetitors();
+    if (scanned) await analyzeCompetitors();
+  } finally {
+    competitorAutoRunning.value = false;
+  }
+}
+function handleCompetitorScan() {
+  if (competitorAutoRun.value) void runCompetitorAutoFlow();
+  else void scanCompetitors();
 }
 function confirmCompetitor() {
   if (!canConfirmCompetitor.value)
@@ -8148,6 +8826,8 @@ async function generateContentBatch() {
     if (context !== projectContext || project.value?.project_id !== projectId)
       return;
     project.value = normalizeProject(response.data.data);
+    selectGeneratedComplianceChecklist();
+    selectGeneratedTopics();
     notify("批量内容规划已生成并完成逐条合规自检，请市场部+合规部双确认");
     await scrollAfterRender("batch-topic-actions");
   } catch (error) {
@@ -8168,6 +8848,8 @@ async function generateContentBatch() {
         const generatedAt = latest.data.data.content_batch?.generated_at || "";
         if (generatedAt && generatedAt !== previousGeneratedAt) {
           project.value = normalizeProject(latest.data.data);
+          selectGeneratedComplianceChecklist();
+          selectGeneratedTopics();
           notify("批量内容规划已生成并完成逐条合规自检，请市场部+合规部双确认");
           await scrollAfterRender("batch-topic-actions");
           return;
@@ -8241,8 +8923,12 @@ async function generateContentImages(
     const updated = project.value.contents?.find(
       (item) => item.content_id === content.content_id,
     );
+    selectGeneratedTopics(updated || content);
+    const duration = formatDuration(
+      latestAuditEvent("generate_content_images")?.duration_ms,
+    );
     notify(
-      updated?.image_errors?.length
+      (updated?.image_errors?.length
         ? `配图部分完成：${updated.image_errors.length} 张失败，可单张重试`
         : wasApproved
           ? indexes?.length === 1
@@ -8250,13 +8936,62 @@ async function generateContentImages(
             : "配图已重新生成，原审批已撤销，请重新完成市场、合规与终审确认"
           : indexes?.length === 1
             ? `图${indexes[0]} 已生成，请核对图文对应关系`
-            : "配图已按素材清单生成，请核对图文对应关系",
+            : "配图已按正文段落逐张生成，请核对图文对应关系") +
+        (duration ? `（AI 用时：${duration}）` : ""),
       updated?.image_errors?.length ? "warning" : "success",
     );
   } catch (error) {
     if (context === projectContext) notify(extractError(error), "error");
   } finally {
     if (context === projectContext) imageLoading.value = "";
+  }
+}
+const allImagesLoading = ref(false);
+/** 全项目批量配图：后台全局并发池一次生成全部内容的配图，前端轮询任务状态 */
+async function generateAllImages() {
+  if (
+    !project.value ||
+    allImagesLoading.value ||
+    !canRegenerateContentImages.value
+  )
+    return;
+  if (
+    isApproved.value &&
+    !window.confirm(
+      "重新生成配图将撤销当前市场、合规与终审签字，生成成功后需重新审核。是否继续？",
+    )
+  )
+    return;
+  const projectId = project.value.project_id;
+  const context = projectContext;
+  const wasApproved = isApproved.value;
+  allImagesLoading.value = true;
+  notify(
+    "已启动全项目批量配图（后台全局并发，全部内容的配图一次生成），可继续浏览页面",
+    "info",
+  );
+  try {
+    const response =
+      await pharmaTranslatorApi.generateAllContentImages(projectId);
+    if (context !== projectContext || project.value?.project_id !== projectId)
+      return;
+    project.value = normalizeProject(response.data.data);
+    const failedCount = (project.value.contents || []).reduce(
+      (sum, item) => sum + (item.image_errors?.length || 0),
+      0,
+    );
+    notify(
+      failedCount
+        ? `全项目配图完成：${failedCount} 张失败，可到对应内容单张重试`
+        : wasApproved
+          ? "全项目配图已生成，原审批已撤销，请重新完成市场、合规与终审确认"
+          : "全项目配图已生成，请核对图文对应关系",
+      failedCount ? "warning" : "success",
+    );
+  } catch (error) {
+    if (context === projectContext) notify(extractError(error), "error");
+  } finally {
+    if (context === projectContext) allImagesLoading.value = false;
   }
 }
 function channelBlockingRisks(channel: string) {
@@ -8422,38 +9157,6 @@ async function fixAllViolations() {
     if (context === projectContext) reworkLoading.value = "";
   }
 }
-const AUTO_FIX_LABEL = "一键修复";
-async function autoFixAll() {
-  if (!project.value || reworkLoading.value) return;
-  const projectId = project.value.project_id;
-  const context = projectContext;
-  reworkLoading.value = AUTO_FIX_LABEL;
-  reworkElapsed.value = 0;
-  clearInterval(reworkTimer);
-  reworkTimer = setInterval(() => reworkElapsed.value++, 1000);
-  notify(
-    "已开始一键修复：调用已配置的 AI 模型改写违规片段（后台运行，3 分钟内完成），可继续浏览页面",
-    "info",
-  );
-  try {
-    const response = await pharmaTranslatorApi.autoFixContent(projectId);
-    if (context !== projectContext || project.value?.project_id !== projectId)
-      return;
-    project.value = normalizeProject(response.data.data);
-    batchChecklist.value = [];
-    notify(
-      hasBlockingRisk.value
-        ? "一键修复完成，仍有 ❌ 项无法自动改写（如处方药公域投放），请返工对应平台"
-        : "一键修复完成，❌ 违规项已清零；请重新市场确认，再一键批注并点击合规确认",
-      hasBlockingRisk.value ? "warning" : "success",
-    );
-  } catch (error) {
-    if (context === projectContext) notify(extractError(error), "error");
-  } finally {
-    clearInterval(reworkTimer);
-    if (context === projectContext) reworkLoading.value = "";
-  }
-}
 function approve(
   action: "market_confirm" | "compliance_confirm" | "final_approve",
 ) {
@@ -8577,11 +9280,9 @@ async function runComplianceReview() {
   const projectId = project.value.project_id;
   complianceReviewing.value = true;
   reviewProgress.value = null;
-  reviewElapsed.value = 0;
-  const startedAt = Date.now();
   clearInterval(reviewTimer);
+  void pollReviewProgress(projectId);
   reviewTimer = window.setInterval(() => {
-    reviewElapsed.value = Math.floor((Date.now() - startedAt) / 1000);
     void pollReviewProgress(projectId);
   }, 1500);
   try {
@@ -8750,7 +9451,8 @@ async function runComplianceFilter() {
     if (project.value?.project_id !== projectId) return;
     forceFilterInventorySync = true;
     project.value = normalizeProject(response.data.data);
-    notify("合规过滤完成，请逐条复核谨慎/替换项并确认存量处置清单");
+    selectComplianceFilterChecks();
+    notify("合规过滤完成，确认内容已自动勾选，请逐条复核谨慎/替换项并确认存量处置清单");
     nextTick(() => scrollToAnchor("filter-adopt-all"));
   } catch (error) {
     notify(extractError(error), "error");
@@ -8758,57 +9460,11 @@ async function runComplianceFilter() {
     filterRunning.value = false;
   }
 }
-async function createFilterTicket() {
-  if (
-    !project.value ||
-    ticketSubmitting.value ||
-    !filterTicketQuestion.value.trim()
-  )
-    return;
-  ticketSubmitting.value = true;
-  try {
-    const response = await pharmaTranslatorApi.createComplianceTicket(
-      project.value.project_id,
-      {
-        question: filterTicketQuestion.value.trim(),
-        riskIds: filterTicketRiskIds.value,
-      },
-    );
-    project.value = normalizeProject(response.data.data);
-    filterTicketQuestion.value = "";
-    filterTicketRiskIds.value = [];
-    notify("已提交中睿合规专家答疑，24 小时内响应");
-  } catch (error) {
-    notify(extractError(error), "error");
-  } finally {
-    ticketSubmitting.value = false;
-  }
-}
-async function askComplianceAi() {
-  const question = aiAskQuestion.value.trim();
-  if (!project.value || aiAskLoading.value || !question) return;
-  aiAskLoading.value = true;
-  try {
-    const response = await pharmaTranslatorApi.askComplianceAi(
-      project.value.project_id,
-      question,
-    );
-    aiAskResult.value = response.data.data;
-  } catch (error) {
-    notify(extractError(error), "error");
-  } finally {
-    aiAskLoading.value = false;
-  }
-}
-function escalateAiQuestion() {
-  filterTicketQuestion.value = aiAskQuestion.value.trim();
-  consultDialog.value = false;
-  return createFilterTicket();
-}
 async function confirmComplianceFilter() {
   if (!filterScanned.value) return notify("请先运行合规过滤", "warning");
   if (filterInventoryDirty.value)
     return notify("存量内容已修改，请重新运行合规过滤后再确认", "warning");
+  selectComplianceFilterChecks();
   const signer = filterSignerName.value.trim();
   const title = filterSignerTitle.value.trim();
   if (!title.includes("合规"))
@@ -8894,6 +9550,48 @@ function complianceLabelColor(label?: ComplianceLabel) {
     : label === "caution"
     ? "warning"
     : "success";
+}
+function formatDuration(durationMs?: number | null) {
+  if (durationMs == null || !Number.isFinite(durationMs) || durationMs < 0) return "";
+  if (durationMs < 1000) return `${Math.round(durationMs)} 毫秒`;
+  const seconds = durationMs / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = Math.round(seconds % 60);
+  if (minutes < 60)
+    return `${minutes} 分钟${restSeconds ? ` ${restSeconds} 秒` : ""}`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return `${hours} 小时${restMinutes ? ` ${restMinutes} 分钟` : ""}`;
+}
+function latestAuditEvent(actions: string | string[]) {
+  const actionSet = new Set(Array.isArray(actions) ? actions : [actions]);
+  return (project.value?.audit_events || []).reduce<PharmaAuditEvent | null>(
+    (latest, event) => {
+      if (!event.action || !actionSet.has(event.action)) return latest;
+      if (!latest) return event;
+      const eventTime = event.time ? Date.parse(event.time) : NaN;
+      const latestTime = latest.time ? Date.parse(latest.time) : NaN;
+      if (Number.isNaN(eventTime)) return latest;
+      return Number.isNaN(latestTime) || eventTime >= latestTime ? event : latest;
+    },
+    null,
+  );
+}
+function completionMeta(
+  businessTime: string | null | undefined,
+  actions: string | string[],
+) {
+  const event = latestAuditEvent(actions);
+  const time = businessTime || event?.time;
+  if (!time) return "";
+  const duration = formatDuration(event?.duration_ms);
+  return `完成时间：${formatDateTime(time)}${duration ? ` · AI 用时：${duration}` : ""}`;
+}
+function progressLogOffset(time: number) {
+  const startedAt = reviewProgress.value?.started_at;
+  if (startedAt == null || !Number.isFinite(time)) return "";
+  return `[+${Math.max(0, time - startedAt).toFixed(1)}s]`;
 }
 function formatDateTime(value?: string | null) {
   if (!value) return "—";
@@ -9249,6 +9947,23 @@ function providerLabel(provider: string) {
     )[provider] || provider
   );
 }
+// 页面不展示后端调用的模型名称（如 kimweixin/kimi-k3.1-pro）：
+// 模型标签以全角/半角括号嵌入在 notice/comment/通知里，内容为纯 ASCII
+// （provider_id、provider_type、模型 id），可能嵌套，逐层剥离；含中文的括号保留。
+function maskModelLabel(text?: string | null): string {
+  if (!text) return "";
+  let result = String(text);
+  const pattern = /[（(][^一-鿿（）()]*[）)]/g;
+  for (let i = 0; i < 3; i += 1) {
+    const next = result.replace(pattern, (match) => {
+      const inner = match.slice(1, -1).trim();
+      return /[/_\-.]/.test(inner) || inner.length > 4 ? "" : match;
+    });
+    if (next === result) break;
+    result = next;
+  }
+  return result.replace(/ {2,}/g, " ").trim();
+}
 function auditAction(action: string) {
   return (
     (
@@ -9298,24 +10013,31 @@ function formatBytes(bytes: number) {
     ? `${(bytes / 1024).toFixed(1)} KB`
     : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
-function formatDate(value: string) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
 </script>
 
 <style scoped>
+.approval-blocker-alert {
+  color: #3e2723 !important;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.approval-blocker-alert :deep(.v-alert__prepend .v-icon) {
+  color: #ef6c00;
+}
+.approval-blocker-alert b {
+  color: #bf360c;
+}
 .approval-blockers {
   margin: 4px 0 0;
   padding-left: 20px;
 }
 .approval-blockers li {
   margin: 2px 0;
+  color: #3e2723;
+}
+.approval-blockers :deep(.v-btn.text-warning) {
+  color: #e65100 !important;
+  font-weight: 600;
 }
 .report-preview-body {
   font-size: 14px;
@@ -9962,6 +10684,93 @@ function formatDate(value: string) {
   border-radius: 0;
   background: transparent;
 }
+.result-step-nav {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin: 0 0 20px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--pharma-border);
+}
+.result-step-nav-items {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+  overflow-x: auto;
+}
+.result-step-nav-item {
+  display: flex;
+  min-width: 0;
+  flex: 1 0 auto;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--pharma-muted);
+  background: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.result-step-nav-item:not(:disabled):not(.active):hover {
+  background: rgba(42, 82, 190, 0.05);
+}
+.result-step-nav-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.result-step-nav-no {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border: 1px solid var(--pharma-border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.result-step-nav-item.done .result-step-nav-no {
+  border-color: transparent;
+  color: var(--pharma-teal);
+  background: rgba(15, 155, 142, 0.12);
+}
+.result-step-nav-item.active {
+  color: var(--pharma-primary);
+  background: rgba(42, 82, 190, 0.08);
+  font-weight: 700;
+}
+.result-step-nav-item.active .result-step-nav-no {
+  border-color: var(--pharma-primary);
+  color: var(--pharma-primary);
+}
+.result-step-nav-arrow {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  align-items: center;
+  padding: 6px 12px;
+  border: 1px solid var(--pharma-border);
+  border-radius: 8px;
+  color: var(--pharma-primary);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.result-step-nav-arrow:not(:disabled):hover {
+  background: rgba(42, 82, 190, 0.06);
+}
+.result-step-nav-arrow:disabled {
+  color: var(--pharma-muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 .result-toolbar-step {
   display: flex;
   width: 64px;
@@ -10477,8 +11286,7 @@ function formatDate(value: string) {
 .scene-matrix-head small {
   display: block;
 }
-.scene-matrix-head small,
-.muted-text {
+.scene-matrix-head small {
   color: var(--pharma-muted);
 }
 .scene-grid {
@@ -10930,19 +11738,9 @@ function formatDate(value: string) {
   font-weight: 600;
   background: rgba(49, 89, 200, 0.06);
 }
-.competitor-confirm {
-  border-top: 1px dashed rgba(49, 89, 200, 0.3);
-  padding-top: 12px;
-}
 .competitor-card.selected {
   border-color: rgba(49, 89, 200, 0.7);
   background: rgba(49, 89, 200, 0.04);
-}
-.competitor-card-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
 }
 .competitor-refs {
   display: flex;
@@ -10977,6 +11775,14 @@ function formatDate(value: string) {
   justify-content: space-between;
   gap: 12px;
   margin: 14px 0 10px;
+}
+.scene-toolbar > div {
+  display: grid;
+  gap: 3px;
+}
+.scene-toolbar strong {
+  color: var(--pharma-ink);
+  font-size: 14px;
 }
 .scene-toolbar small {
   color: var(--pharma-muted);
@@ -11371,6 +12177,14 @@ function formatDate(value: string) {
   color: var(--pharma-muted);
   font-size: 12px;
 }
+/* 生成中占位：与成品图同画幅，逐张对应素材文案 */
+.content-image-loading--pending {
+  flex-direction: column;
+  gap: 8px;
+  color: #4d6f6a;
+  font-weight: 600;
+  background: linear-gradient(145deg, #f3f8f7 0%, #e8f1f0 100%);
+}
 .content-image figcaption {
   display: flex;
   flex: 1;
@@ -11400,6 +12214,31 @@ function formatDate(value: string) {
   margin-top: auto;
   margin-left: -6px;
   color: #4b6670;
+}
+/* 放大预览：上一张/下一张悬浮切换按钮 */
+.content-image-preview {
+  position: relative;
+}
+.content-image-preview__nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 4px 14px rgba(32, 65, 82, 0.22);
+}
+.content-image-preview__nav--prev {
+  left: 12px;
+}
+.content-image-preview__nav--next {
+  right: 12px;
+}
+.content-image-preview__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+  color: var(--pharma-muted);
+  font-size: 13px;
 }
 .batch-channel-head {
   display: flex;
@@ -11591,28 +12430,134 @@ function formatDate(value: string) {
 .literature-summary {
   margin: 16px 0;
   overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.literature-summary h4 {
+  padding: 12px 14px 0;
 }
 .literature-summary-table {
   width: 100%;
-  border-collapse: collapse;
+  min-width: 880px;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 13px;
   background: #fff;
+  table-layout: fixed;
+  margin-top: 10px;
 }
 .literature-summary-table th,
 .literature-summary-table td {
-  border: 1px solid #e2e8f0;
-  padding: 8px 10px;
+  border-top: 1px solid #edf1f5;
+  padding: 10px 12px;
   text-align: left;
   vertical-align: top;
-  line-height: 1.6;
+  line-height: 1.65;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .literature-summary-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   background: #f8fafc;
+  color: #475569;
   font-weight: 600;
   white-space: nowrap;
 }
+.literature-summary-table .col-no { width: 64px; }
+.literature-summary-table .col-claim { width: 20%; }
+.literature-summary-table .col-source { width: auto; }
+.literature-summary-table .col-level { width: 104px; }
+.literature-summary-table .col-note { width: 22%; }
 .literature-summary-table td.nowrap {
   white-space: nowrap;
+}
+.literature-summary-table tbody tr:hover td {
+  background: #fafbff;
+}
+.literature-summary-table tr.level-row-strong td:first-child {
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+.literature-summary-table tr.level-row-weak td:first-child {
+  box-shadow: inset 3px 0 0 #f59e0b;
+}
+.literature-summary-table tr.level-row-none td:first-child {
+  box-shadow: inset 3px 0 0 #ef4444;
+}
+.claim-no-cell {
+  font-weight: 600;
+  color: #334155;
+}
+.claim-text-cell {
+  white-space: pre-wrap;
+  color: #1e293b;
+  font-weight: 500;
+}
+.summary-source-cell {
+  white-space: normal;
+}
+.summary-source-group {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border-left: 3px solid #cbd5e1;
+}
+.summary-source-group + .summary-source-group {
+  margin-top: 6px;
+}
+.summary-source-group.channel-uploaded { border-left-color: #6366f1; }
+.summary-source-group.channel-knowledge_base { border-left-color: #0ea5e9; }
+.summary-source-group.channel-leaflet { border-left-color: #14b8a6; }
+.summary-source-group.channel-pubmed { border-left-color: #a855f7; }
+.summary-source-group.is-related { background: #fffbeb; }
+.summary-source-group.is-miss { background: #f8fafc; opacity: 0.75; }
+.summary-source-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #334155;
+}
+.summary-source-count {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #e0e7ff;
+  color: #4338ca;
+}
+.summary-source-count.related { background: #fef3c7; color: #b45309; }
+.summary-source-count.miss { background: #f1f5f9; color: #94a3b8; }
+.summary-source-items {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: #475569;
+}
+.summary-source-items li + li {
+  margin-top: 2px;
+}
+.claim-note-cell {
+  color: #475569;
+}
+.claim-disposal {
+  margin-top: 4px;
+  color: #dc2626;
+  font-size: 12px;
+}
+.citation-group h6 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.citation-miss {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #b26a00;
 }
 .claim-list-title {
   margin-top: 18px;
@@ -11640,6 +12585,39 @@ function formatDate(value: string) {
 .triple-card-grid dd {
   margin: 0;
 }
+.triple-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.triple-source-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px;
+  padding: 6px 10px;
+  border-left: 3px solid #94a3b8;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.08);
+  word-break: break-word;
+}
+.triple-source-row.channel-leaflet {
+  border-left-color: #14b8a6;
+}
+.triple-source-row.channel-uploaded {
+  border-left-color: #6366f1;
+}
+.triple-source-row.channel-knowledge_base {
+  border-left-color: #0ea5e9;
+}
+.triple-source-row.channel-pubmed {
+  border-left-color: #a855f7;
+}
+.triple-source-row.is-miss .triple-source-labels {
+  color: var(--pharma-muted);
+}
+.triple-source-title {
+  font-weight: 600;
+}
 .violation-copy {
   color: #b3261e;
 }
@@ -11663,6 +12641,23 @@ function formatDate(value: string) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   margin-bottom: 8px;
+}
+.literature-department-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  gap: 12px;
+}
+.literature-department-picker > span {
+  color: rgba(var(--v-theme-on-surface), 0.68);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.literature-department-options {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .error-text {
   color: rgb(var(--v-theme-error));
@@ -12075,106 +13070,36 @@ function formatDate(value: string) {
 .compliance-signoff-section .risk-item {
   margin-top: 10px;
 }
-.zr-panels {
-  margin-top: 10px;
-}
-.zr-layer-grid,
-.zr-rule-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 12px;
-}
-.zr-layer,
-.zr-rule {
-  border: 1px solid var(--pharma-border, rgba(0, 0, 0, 0.12));
-  border-radius: 8px;
-  padding: 10px 12px;
-}
-.zr-layer h5,
-.zr-rule h5,
-.zr-subtitle {
-  margin: 0 0 6px;
-  font-size: 14px;
-}
-.zr-subtitle {
-  margin-top: 14px;
-}
-.zr-layer ul,
-.zr-rule ul {
-  margin: 0;
-  padding-left: 18px;
-  line-height: 1.8;
-}
-.zr-rule--red {
-  border-left: 4px solid rgb(var(--v-theme-error));
-}
-.zr-rule--amber {
-  border-left: 4px solid rgb(var(--v-theme-warning));
-}
-.zr-rule--green {
-  border-left: 4px solid rgb(var(--v-theme-success));
-}
 .zr-confirm-checks {
   margin: 10px 0;
 }
 .zr-confirm-checks-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+.zr-confirm-checks-grid .v-chip {
+  justify-self: start;
+  max-width: 100%;
+}
+.zr-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.zr-confirm-btn {
+  justify-self: start;
+  min-height: 40px;
 }
 .zr-confirm-hint {
   color: rgb(var(--v-theme-warning));
 }
-.zr-consult-intro {
-  margin-bottom: 12px;
-  color: var(--pharma-muted);
-}
-.zr-consult-grid {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 20px;
-}
-.zr-consult-qr {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  text-align: center;
-}
-.zr-consult-qr img {
-  width: 240px;
-  height: 240px;
-  object-fit: contain;
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-}
-.zr-consult-qr-missing {
-  width: 240px;
-  height: 240px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
-  font-size: 12px;
-  padding: 12px;
-}
-.zr-consult-ai {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.zr-consult-actions {
-  display: flex;
-  gap: 8px;
-}
-.zr-consult-answer pre {
-  white-space: pre-wrap;
-  font-family: inherit;
-  margin: 0 0 6px;
-  line-height: 1.7;
+.zr-confirm-hint--done {
+  color: rgb(var(--v-theme-success));
 }
 @media (max-width: 760px) {
-  .zr-consult-grid,
   .zr-confirm-checks-grid {
     grid-template-columns: 1fr;
   }
@@ -12333,34 +13258,10 @@ function formatDate(value: string) {
 .empty-state.compact {
   padding: 18px;
 }
-.filter-inventory-item {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid var(--pharma-border);
-  border-radius: 12px;
-  background: #fff;
-}
-.filter-inventory-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-.filter-inventory-flags {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-}
 .filter-risk-group h5 {
   margin: 12px 0 8px;
   font-size: 13px;
   font-weight: 700;
-}
-@media (max-width: 900px) {
-  .filter-inventory-grid {
-    grid-template-columns: 1fr;
-  }
 }
 .source-audit-panels {
   margin-top: 24px;
@@ -12448,6 +13349,10 @@ function formatDate(value: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.workspace-actions {
+  justify-content: flex-end;
+  margin: -20px 0 14px;
 }
 .history-card {
   position: relative;
@@ -12736,6 +13641,7 @@ function formatDate(value: string) {
 .literature-kb :deep(.v-select .v-field__input > input[type="text"]),
 .step-actions :deep(.v-select .v-field__input > input[type="text"]),
 .dimension-source-bar :deep(.v-select .v-field__input > input[type="text"]),
+.platform-picker :deep(.v-select .v-field__input > input[type="text"]),
 .workflow-controls :deep(.v-select .v-field__input > input[type="text"]) {
   opacity: 0;
   position: absolute;
